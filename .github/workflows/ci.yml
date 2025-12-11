@@ -300,6 +300,13 @@ jobs:
           path: cross-platform-test/sha256sums-linux.txt
           retention-days: 7
 
+      - name: Upload finalized binaries (Linux)
+        uses: actions/upload-artifact@v4
+        with:
+          name: finalized-binaries-linux
+          path: cross-platform-test/finalized-*
+          retention-days: 7
+
   test-macos:
     name: Test on macOS
     needs: merge-artifacts
@@ -456,6 +463,13 @@ jobs:
           path: cross-platform-test/sha256sums-macos.txt
           retention-days: 7
 
+      - name: Upload finalized binaries (macOS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: finalized-binaries-macos
+          path: cross-platform-test/finalized-*
+          retention-days: 7
+
   test-windows:
     name: Test on Windows
     needs: merge-artifacts
@@ -503,6 +517,10 @@ jobs:
       - name: Cross-platform finalization test - finalize all templates
         shell: bash
         run: |
+          # Disable MSYS path conversion to ensure deterministic behavior
+          export MSYS_NO_PATHCONV=1
+          export MSYS2_ARG_CONV_EXCL="*"
+
           echo "=== Cross-platform Finalization Test ==="
           echo "Finalizing all templates with Windows finalizer to verify deterministic output"
           echo ""
@@ -561,6 +579,13 @@ jobs:
         with:
           name: cross-platform-hashes-windows
           path: cross-platform-test/sha256sums-windows.txt
+          retention-days: 7
+
+      - name: Upload finalized binaries (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: finalized-binaries-windows
+          path: cross-platform-test/finalized-*
           retention-days: 7
 
   verify-deterministic-finalization:
