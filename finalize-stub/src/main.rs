@@ -145,9 +145,10 @@ fn print_usage() {
     eprintln!("Usage: finalize-stub [OPTIONS] <template> <arg0> [arg1 ...]");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --transform=N   Mark argument N for runfiles resolution (can be repeated)");
-    eprintln!("                  If not specified, all arguments are transformed by default");
-    eprintln!("  -o <output>     Write output to file (default: stdout)");
+    eprintln!("  --transform=N[,N...]  Mark argument(s) N for runfiles resolution");
+    eprintln!("                        Can use comma-separated values or repeat flag");
+    eprintln!("                        If not specified, all arguments are transformed by default");
+    eprintln!("  -o <output>           Write output to file (default: stdout)");
     eprintln!();
     eprintln!("Arguments:");
     eprintln!("  <template>      Path to template runfiles-stub binary");
@@ -161,7 +162,10 @@ fn print_usage() {
     eprintln!("  # Transform only arg0, write to file:");
     eprintln!("  finalize-stub --transform=0 -o finalized template _main/bin/mytool --flag");
     eprintln!();
-    eprintln!("  # Transform arg0 and arg2:");
+    eprintln!("  # Transform arg0 and arg2 (using comma-separated values):");
+    eprintln!("  finalize-stub --transform=0,2 -o output template cmd arg1 data/file");
+    eprintln!();
+    eprintln!("  # Transform arg0 and arg2 (using repeated flag):");
     eprintln!("  finalize-stub --transform=0 --transform=2 -o output template cmd arg1 data/file");
 }
 
@@ -180,12 +184,16 @@ fn main() {
 
     while pos < args.len() {
         if let Some(idx_str) = args[pos].strip_prefix("--transform=") {
-            match idx_str.parse::<u32>() {
-                Ok(idx) if idx < 10 => transform_indices.push(idx),
-                _ => {
-                    eprintln!("Error: Invalid --transform value: {}", idx_str);
-                    eprintln!("Must be a number between 0 and 9");
-                    process::exit(1);
+            // Support comma-separated values: --transform=0,1,2
+            for part in idx_str.split(',') {
+                match part.trim().parse::<u32>() {
+                    Ok(idx) if idx < 10 => transform_indices.push(idx),
+                    _ => {
+                        eprintln!("Error: Invalid --transform value: {}", part);
+                        eprintln!("Must be a number between 0 and 9");
+                        eprintln!("Example: --transform=0 or --transform=0,1,2");
+                        process::exit(1);
+                    }
                 }
             }
             pos += 1;
