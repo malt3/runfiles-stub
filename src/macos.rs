@@ -351,7 +351,7 @@ fn is_template_placeholder(placeholder: &[u8]) -> bool {
 }
 
 #[no_mangle]
-pub extern "C" fn main() -> ! {
+pub extern "C" fn main(runtime_argc: i32, runtime_argv: *const *const u8) -> ! {
     unsafe {
         // Check if ARGC is still a placeholder
         if is_template_placeholder(&ARGC_PLACEHOLDER) {
@@ -443,11 +443,13 @@ pub extern "C" fn main() -> ! {
             &ARG9_PLACEHOLDER,
         ];
 
-        // Storage for resolved paths
-        let mut resolved_paths: [[u8; MAX_PATH_LEN]; 10] = [[0; MAX_PATH_LEN]; 10];
-        let mut resolved_ptrs: [*const u8; 11] = [core::ptr::null(); 11];
+        // Storage for resolved paths (embedded args + runtime args)
+        // We need space for embedded args (up to 10) plus runtime args (runtime_argc - 1, excluding stub path)
+        let mut resolved_paths: [[u8; MAX_PATH_LEN]; 128] = [[0; MAX_PATH_LEN]; 128];
+        let mut resolved_ptrs: [*const u8; 129] = [core::ptr::null(); 129];
+        let mut total_argc = 0usize;
 
-        // Resolve each argument
+        // Resolve embedded arguments
         for i in 0..argc {
             let arg_data = arg_placeholders[i];
             let arg_len = strlen(arg_data);
@@ -488,9 +490,37 @@ pub extern "C" fn main() -> ! {
 
             resolved_ptrs[i] = resolved_paths[i].as_ptr();
         }
+        total_argc = argc;
+
+        // Append runtime arguments (skip argv[0] which is the stub itself)
+        if runtime_argc > 1 {
+            for i in 1..runtime_argc as usize {
+                if total_argc >= 128 {
+                    print(b"ERROR: Too many total arguments (embedded + runtime > 128)\n");
+                    exit(1);
+                }
+
+                // Get runtime argument
+                let runtime_arg_ptr = *runtime_argv.add(i);
+
+                // Find length of runtime argument
+                let mut arg_len = 0;
+                while *runtime_arg_ptr.add(arg_len) != 0 && arg_len < MAX_PATH_LEN {
+                    arg_len += 1;
+                }
+
+                // Copy runtime argument to resolved_paths
+                let copy_len = arg_len.min(MAX_PATH_LEN);
+                let runtime_arg_slice = core::slice::from_raw_parts(runtime_arg_ptr, copy_len);
+                resolved_paths[total_argc][..copy_len].copy_from_slice(runtime_arg_slice);
+
+                resolved_ptrs[total_argc] = resolved_paths[total_argc].as_ptr();
+                total_argc += 1;
+            }
+        }
 
         // NULL-terminate the argv array
-        resolved_ptrs[argc] = core::ptr::null();
+        resolved_ptrs[total_argc] = core::ptr::null();
 
         // Get the executable path (first argument)
         let executable = resolved_ptrs[0];

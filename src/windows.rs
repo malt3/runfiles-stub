@@ -54,7 +54,7 @@ struct PROCESS_INFORMATION {
     dwThreadId: DWORD,
 }
 
-// External Windows API functions
+// External Windows API functions (kernel32.dll)
 extern "system" {
     fn ExitProcess(exit_code: u32) -> !;
     fn GetStdHandle(nStdHandle: DWORD) -> HANDLE;
@@ -83,18 +83,26 @@ extern "system" {
     ) -> BOOL;
     fn CloseHandle(hObject: HANDLE) -> BOOL;
     fn GetEnvironmentVariableA(lpName: LPCSTR, lpBuffer: LPSTR, nSize: DWORD) -> DWORD;
-    fn CreateProcessA(
-        lpApplicationName: LPCSTR,
-        lpCommandLine: LPSTR,
+    fn CreateProcessW(
+        lpApplicationName: *const u16,
+        lpCommandLine: *mut u16,
         lpProcessAttributes: LPVOID,
         lpThreadAttributes: LPVOID,
         bInheritHandles: BOOL,
         dwCreationFlags: DWORD,
         lpEnvironment: LPVOID,
-        lpCurrentDirectory: LPCSTR,
+        lpCurrentDirectory: *const u16,
         lpStartupInfo: *mut STARTUPINFOA,
         lpProcessInformation: *mut PROCESS_INFORMATION,
     ) -> BOOL;
+    fn GetCommandLineW() -> *const u16;
+    fn LocalFree(hMem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+}
+
+// External Windows API functions (shell32.dll)
+#[link(name = "shell32")]
+extern "system" {
+    fn CommandLineToArgvW(lpCmdLine: *const u16, pNumArgs: *mut i32) -> *mut *mut u16;
 }
 
 // String utilities
@@ -427,6 +435,34 @@ fn strlen(s: &[u8]) -> usize {
     len
 }
 
+// Get the length of a null-terminated wide string
+fn wstrlen(s: *const u16) -> usize {
+    let mut len = 0;
+    unsafe {
+        while *s.add(len) != 0 {
+            len += 1;
+        }
+    }
+    len
+}
+
+// Convert UTF-8 to UTF-16 (simplified, ASCII-compatible only)
+fn utf8_to_wide(utf8: &[u8], out: &mut [u16]) -> usize {
+    let mut out_len = 0;
+    for i in 0..utf8.len() {
+        if out_len >= out.len() {
+            break;
+        }
+        if utf8[i] == 0 {
+            break;
+        }
+        // Simple conversion: assume ASCII range
+        out[out_len] = utf8[i] as u16;
+        out_len += 1;
+    }
+    out_len
+}
+
 // Check if placeholder is still in template state
 fn is_template_placeholder(placeholder: &[u8]) -> bool {
     if placeholder.len() < 17 {
@@ -438,6 +474,25 @@ fn is_template_placeholder(placeholder: &[u8]) -> bool {
 #[no_mangle]
 pub extern "C" fn main() -> ! {
     unsafe {
+        // Parse runtime arguments from command line (keep as UTF-16)
+        let cmdline = GetCommandLineW();
+        let mut runtime_argc: i32 = 0;
+        let runtime_argv_wide = CommandLineToArgvW(cmdline, &mut runtime_argc);
+
+        // Store pointers to runtime args (skip argv[0])
+        let mut runtime_args: [*const u16; 128] = [core::ptr::null(); 128];
+        let mut runtime_args_count = 0usize;
+
+        if !runtime_argv_wide.is_null() && runtime_argc > 1 {
+            for i in 1..runtime_argc as usize {
+                if runtime_args_count >= 128 {
+                    break;
+                }
+                runtime_args[runtime_args_count] = *runtime_argv_wide.add(i);
+                runtime_args_count += 1;
+            }
+        }
+
         // Check if ARGC is still a placeholder
         if is_template_placeholder(&ARGC_PLACEHOLDER) {
             print(b"ERROR: This is a template stub runner.\r\n");
@@ -528,10 +583,11 @@ pub extern "C" fn main() -> ! {
             &ARG9_PLACEHOLDER,
         ];
 
-        // Storage for resolved paths
-        let mut resolved_paths: [[u8; MAX_PATH_LEN]; 10] = [[0; MAX_PATH_LEN]; 10];
+        // Storage for resolved paths (embedded args + runtime args)
+        let mut resolved_paths: [[u8; MAX_PATH_LEN]; 128] = [[0; MAX_PATH_LEN]; 128];
+        let mut total_argc = 0usize;
 
-        // Resolve each argument
+        // Resolve embedded arguments
         for i in 0..argc {
             let arg_data = arg_placeholders[i];
             let arg_len = strlen(arg_data);
@@ -570,54 +626,98 @@ pub extern "C" fn main() -> ! {
                 resolved_paths[i][..copy_len].copy_from_slice(&arg_slice[..copy_len]);
             }
         }
+        total_argc = argc;
 
-        // Build command line for CreateProcess
-        // Windows CreateProcess needs a single command line string
-        let mut cmdline = [0u8; 4096];
-        let mut cmdline_pos = 0;
+        // Build command line for CreateProcessW (UTF-16)
+        // Command line includes embedded args + runtime args
+        let mut cmdline_wide = [0u16; 8192]; // Large buffer for UTF-16
+        let mut cmdline_pos = 0usize;
 
+        // Add embedded arguments (convert from UTF-8 to UTF-16)
         for i in 0..argc {
             let arg_len = strlen(&resolved_paths[i]);
+            let arg_slice = &resolved_paths[i][..arg_len];
 
-            // Add quotes if needed (if path contains spaces)
-            let needs_quotes = find_byte(&resolved_paths[i][..arg_len], b' ').is_some();
+            // Check if we need quotes (if path contains spaces)
+            let needs_quotes = find_byte(arg_slice, b' ').is_some();
 
-            if needs_quotes && cmdline_pos < cmdline.len() {
-                cmdline[cmdline_pos] = b'"';
+            if needs_quotes && cmdline_pos < cmdline_wide.len() {
+                cmdline_wide[cmdline_pos] = b'"' as u16;
                 cmdline_pos += 1;
             }
 
-            // Copy argument
-            let copy_len = arg_len.min(cmdline.len() - cmdline_pos);
-            cmdline[cmdline_pos..cmdline_pos + copy_len]
-                .copy_from_slice(&resolved_paths[i][..copy_len]);
+            // Convert UTF-8 to UTF-16 and copy
+            let converted_len = utf8_to_wide(arg_slice, &mut cmdline_wide[cmdline_pos..]);
+            cmdline_pos += converted_len;
+
+            if needs_quotes && cmdline_pos < cmdline_wide.len() {
+                cmdline_wide[cmdline_pos] = b'"' as u16;
+                cmdline_pos += 1;
+            }
+
+            // Add space between arguments
+            if (i < argc - 1 || runtime_args_count > 0) && cmdline_pos < cmdline_wide.len() {
+                cmdline_wide[cmdline_pos] = b' ' as u16;
+                cmdline_pos += 1;
+            }
+        }
+
+        // Add runtime arguments (already UTF-16, just copy)
+        for i in 0..runtime_args_count {
+            let runtime_arg = runtime_args[i];
+            let arg_len = wstrlen(runtime_arg);
+
+            // Check if we need quotes
+            let mut needs_quotes = false;
+            for j in 0..arg_len {
+                if *runtime_arg.add(j) == b' ' as u16 {
+                    needs_quotes = true;
+                    break;
+                }
+            }
+
+            if needs_quotes && cmdline_pos < cmdline_wide.len() {
+                cmdline_wide[cmdline_pos] = b'"' as u16;
+                cmdline_pos += 1;
+            }
+
+            // Copy wide string
+            let copy_len = arg_len.min(cmdline_wide.len() - cmdline_pos);
+            for j in 0..copy_len {
+                cmdline_wide[cmdline_pos + j] = *runtime_arg.add(j);
+            }
             cmdline_pos += copy_len;
 
-            if needs_quotes && cmdline_pos < cmdline.len() {
-                cmdline[cmdline_pos] = b'"';
+            if needs_quotes && cmdline_pos < cmdline_wide.len() {
+                cmdline_wide[cmdline_pos] = b'"' as u16;
                 cmdline_pos += 1;
             }
 
-            // Add space between arguments (except after last arg)
-            if i < argc - 1 && cmdline_pos < cmdline.len() {
-                cmdline[cmdline_pos] = b' ';
+            // Add space between arguments (except after last)
+            if i < runtime_args_count - 1 && cmdline_pos < cmdline_wide.len() {
+                cmdline_wide[cmdline_pos] = b' ' as u16;
                 cmdline_pos += 1;
             }
         }
 
         // Null-terminate command line
-        if cmdline_pos < cmdline.len() {
-            cmdline[cmdline_pos] = 0;
+        if cmdline_pos < cmdline_wide.len() {
+            cmdline_wide[cmdline_pos] = 0;
         }
+
+        // Convert first argument (executable path) to UTF-16 for CreateProcessW
+        let mut exe_path_wide = [0u16; MAX_PATH_LEN];
+        let exe_len = strlen(&resolved_paths[0]);
+        utf8_to_wide(&resolved_paths[0][..exe_len], &mut exe_path_wide);
 
         // Create the process
         let mut si: STARTUPINFOA = core::mem::zeroed();
         si.cb = core::mem::size_of::<STARTUPINFOA>() as DWORD;
         let mut pi: PROCESS_INFORMATION = core::mem::zeroed();
 
-        let success = CreateProcessA(
-            resolved_paths[0].as_ptr(), // Application name
-            cmdline.as_mut_ptr(),       // Command line
+        let success = CreateProcessW(
+            exe_path_wide.as_ptr(),     // Application name (UTF-16)
+            cmdline_wide.as_mut_ptr(),  // Command line (UTF-16)
             core::ptr::null_mut(),      // Process attributes
             core::ptr::null_mut(),      // Thread attributes
             1,                          // Inherit handles
@@ -636,6 +736,11 @@ pub extern "C" fn main() -> ! {
         // Close handles (we don't need them)
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
+
+        // Free the argv array allocated by CommandLineToArgvW
+        if !runtime_argv_wide.is_null() {
+            LocalFree(runtime_argv_wide as *mut core::ffi::c_void);
+        }
 
         // Exit successfully - the child process is now running
         ExitProcess(0);
