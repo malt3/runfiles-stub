@@ -149,6 +149,7 @@ fn print_usage() {
     eprintln!("                        Can use comma-separated values or repeat flag");
     eprintln!("                        If not specified, all arguments are transformed by default");
     eprintln!("  -o <output>           Write output to file (default: stdout)");
+    eprintln!("  --                    Stop parsing flags; treat remaining args as positional");
     eprintln!();
     eprintln!("Arguments:");
     eprintln!("  <template>      Path to template runfiles-stub binary");
@@ -167,6 +168,9 @@ fn print_usage() {
     eprintln!();
     eprintln!("  # Transform arg0 and arg2 (using repeated flag):");
     eprintln!("  finalize-stub --transform=0 --transform=2 -o output template cmd arg1 data/file");
+    eprintln!();
+    eprintln!("  # Use -- to pass arguments starting with dashes:");
+    eprintln!("  finalize-stub --transform=0 -o output template -- /bin/tool --some-flag --another");
 }
 
 fn main() {
@@ -183,7 +187,11 @@ fn main() {
     let mut pos = 1;
 
     while pos < args.len() {
-        if let Some(idx_str) = args[pos].strip_prefix("--transform=") {
+        if args[pos] == "--" {
+            // Stop parsing flags, everything after this is positional
+            pos += 1;
+            break;
+        } else if let Some(idx_str) = args[pos].strip_prefix("--transform=") {
             // Support comma-separated values: --transform=0,1,2
             for part in idx_str.split(',') {
                 match part.trim().parse::<u32>() {

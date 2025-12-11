@@ -195,6 +195,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-linux \
             --transform=0 \
             -o test-stub-x86_64 \
+            -- \
             binaries/runfiles-stub-x86_64-linux \
             /bin/echo "Hello from x86_64"
           sha256sum test-stub-x86_64
@@ -206,6 +207,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-linux \
             --transform=0 \
             -o test-stub-aarch64 \
+            -- \
             binaries/runfiles-stub-aarch64-linux \
             /bin/echo "Hello from aarch64"
           sha256sum test-stub-aarch64
@@ -254,6 +256,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-linux \
             --transform=0,1 \
             -o cross-platform-test/finalized-x86_64-linux \
+            -- \
             binaries/runfiles-stub-x86_64-linux \
             /bin/echo "test arg"
 
@@ -261,6 +264,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-linux \
             --transform=0,1 \
             -o cross-platform-test/finalized-aarch64-linux \
+            -- \
             binaries/runfiles-stub-aarch64-linux \
             /bin/echo "test arg"
 
@@ -268,6 +272,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-linux \
             --transform=0,1 \
             -o cross-platform-test/finalized-x86_64-macos \
+            -- \
             binaries/runfiles-stub-x86_64-macos \
             /bin/echo "test arg"
 
@@ -275,6 +280,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-linux \
             --transform=0,1 \
             -o cross-platform-test/finalized-aarch64-macos \
+            -- \
             binaries/runfiles-stub-aarch64-macos \
             /bin/echo "test arg"
 
@@ -282,6 +288,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-linux \
             --transform=0,1 \
             -o cross-platform-test/finalized-x86_64-windows.exe \
+            -- \
             binaries/runfiles-stub-x86_64-windows.exe \
             'C:\Windows\System32\cmd.exe' "test arg"
 
@@ -351,6 +358,7 @@ jobs:
           $FINALIZER \
             --transform=0 \
             -o test-stub-macos \
+            -- \
             $TEMPLATE \
             /bin/echo "Hello from macOS $ARCH_NAME"
           shasum -a 256 test-stub-macos
@@ -386,6 +394,7 @@ jobs:
           $FINALIZER \
             --transform=0 \
             -o test-stub-linux-x86_64 \
+            -- \
             binaries/runfiles-stub-x86_64-linux \
             /bin/echo "Hello from Linux x86_64"
           shasum -a 256 test-stub-linux-x86_64
@@ -394,6 +403,7 @@ jobs:
           $FINALIZER \
             --transform=0 \
             -o test-stub-linux-aarch64 \
+            -- \
             binaries/runfiles-stub-aarch64-linux \
             /bin/echo "Hello from Linux aarch64"
           shasum -a 256 test-stub-linux-aarch64
@@ -417,6 +427,7 @@ jobs:
           $FINALIZER \
             --transform=0,1 \
             -o cross-platform-test/finalized-x86_64-linux \
+            -- \
             binaries/runfiles-stub-x86_64-linux \
             /bin/echo "test arg"
 
@@ -424,6 +435,7 @@ jobs:
           $FINALIZER \
             --transform=0,1 \
             -o cross-platform-test/finalized-aarch64-linux \
+            -- \
             binaries/runfiles-stub-aarch64-linux \
             /bin/echo "test arg"
 
@@ -431,6 +443,7 @@ jobs:
           $FINALIZER \
             --transform=0,1 \
             -o cross-platform-test/finalized-x86_64-macos \
+            -- \
             binaries/runfiles-stub-x86_64-macos \
             /bin/echo "test arg"
 
@@ -438,6 +451,7 @@ jobs:
           $FINALIZER \
             --transform=0,1 \
             -o cross-platform-test/finalized-aarch64-macos \
+            -- \
             binaries/runfiles-stub-aarch64-macos \
             /bin/echo "test arg"
 
@@ -445,6 +459,7 @@ jobs:
           $FINALIZER \
             --transform=0,1 \
             -o cross-platform-test/finalized-x86_64-windows.exe \
+            -- \
             binaries/runfiles-stub-x86_64-windows.exe \
             'C:\Windows\System32\cmd.exe' "test arg"
 
@@ -488,6 +503,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-windows.exe \
             --transform=0 \
             -o test-stub-windows.exe \
+            -- \
             binaries/runfiles-stub-x86_64-windows.exe \
             'C:\Windows\System32\cmd.exe' '/C' 'echo Hello from Windows'
           sha256sum test-stub-windows.exe || certutil -hashfile test-stub-windows.exe SHA256
@@ -532,6 +548,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-windows.exe \
             --transform=0,1 \
             -o cross-platform-test/finalized-x86_64-linux \
+            -- \
             binaries/runfiles-stub-x86_64-linux \
             /bin/echo "test arg"
 
@@ -539,6 +556,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-windows.exe \
             --transform=0,1 \
             -o cross-platform-test/finalized-aarch64-linux \
+            -- \
             binaries/runfiles-stub-aarch64-linux \
             /bin/echo "test arg"
 
@@ -546,6 +564,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-windows.exe \
             --transform=0,1 \
             -o cross-platform-test/finalized-x86_64-macos \
+            -- \
             binaries/runfiles-stub-x86_64-macos \
             /bin/echo "test arg"
 
@@ -553,6 +572,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-windows.exe \
             --transform=0,1 \
             -o cross-platform-test/finalized-aarch64-macos \
+            -- \
             binaries/runfiles-stub-aarch64-macos \
             /bin/echo "test arg"
 
@@ -560,6 +580,7 @@ jobs:
           ./binaries/finalize-stub-x86_64-windows.exe \
             --transform=0,1 \
             -o cross-platform-test/finalized-x86_64-windows.exe \
+            -- \
             binaries/runfiles-stub-x86_64-windows.exe \
             'C:\Windows\System32\cmd.exe' "test arg"
 

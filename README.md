@@ -29,6 +29,7 @@ Create a universal binary stub that works everywhere:
 ./finalize-stub \
   --transform=0 \
   -o my_tool \
+  -- \
   runfiles-stub-x86_64-linux \
   my_workspace/bin/tool
 
@@ -69,6 +70,7 @@ chmod +x finalize-stub-x86_64-linux
 ./finalize-stub-x86_64-linux \
   --transform=0 \
   -o my_echo \
+  -- \
   runfiles-stub-x86_64-linux \
   /bin/echo
 
@@ -124,9 +126,9 @@ The finalizer works on any platform to create stubs for any platform:
 
 ```bash
 # On Linux, create stubs for all platforms
-./finalize-stub-x86_64-linux -o stub-linux runfiles-stub-x86_64-linux /bin/tool
-./finalize-stub-x86_64-linux -o stub-macos runfiles-stub-x86_64-macos /bin/tool
-./finalize-stub-x86_64-linux -o stub.exe runfiles-stub-x86_64-windows.exe 'C:\Windows\System32\cmd.exe'
+./finalize-stub-x86_64-linux -o stub-linux -- runfiles-stub-x86_64-linux /bin/tool
+./finalize-stub-x86_64-linux -o stub-macos -- runfiles-stub-x86_64-macos /bin/tool
+./finalize-stub-x86_64-linux -o stub.exe -- runfiles-stub-x86_64-windows.exe 'C:\Windows\System32\cmd.exe'
 
 # The finalizer just patches bytes - no platform-specific logic needed!
 ```
@@ -152,15 +154,15 @@ This is crucial for Bazel: your **exec platform** (where the build runs) can cre
 
 ```bash
 # Syntax
-finalize-stub [OPTIONS] <template> <arg0> [arg1 ...]
+finalize-stub [OPTIONS] -- <template> <arg0> [arg1 ...]
 
 # Transform all arguments (default)
-finalize-stub -o my_tool template my_workspace/bin/tool data/input.txt
+finalize-stub -o my_tool -- template my_workspace/bin/tool data/input.txt
 
 # Transform only specific arguments
-finalize-stub --transform=0,2 -o my_tool template /bin/tool --flag data/file
-#                          ^^^                            ^^^        ^^^^
-#                      arg0 and arg2                   transform   literal   transform
+finalize-stub --transform=0,2 -o my_tool -- template /bin/tool --flag data/file
+#                          ^^^                                 ^^^        ^^^^
+#                      arg0 and arg2                        transform   literal   transform
 ```
 
 ### Options
@@ -172,6 +174,8 @@ finalize-stub --transform=0,2 -o my_tool template /bin/tool --flag data/file
                       Default: transform ALL arguments
 
 -o <output>           Output file path (default: stdout)
+
+--                    Stop parsing flags; treat remaining args as positional
 ```
 
 ### Runtime Arguments
@@ -180,7 +184,7 @@ Finalized stubs forward runtime arguments to the target:
 
 ```bash
 # Create stub with embedded args
-finalize-stub --transform=0 -o stub template /bin/grep "pattern"
+finalize-stub --transform=0 -o stub -- template /bin/grep "pattern"
 
 # Run with additional args - they're forwarded as argv
 ./stub file1.txt file2.txt
@@ -301,7 +305,7 @@ Wrap test executables with their data dependencies:
 
 ```python
 # Create test runner stub
-finalize-stub --transform=0,1 -o test_runner template \
+finalize-stub --transform=0,1 -o test_runner -- template \
     my_workspace/test/runner \
     my_workspace/test/data/fixtures.json
 ```
@@ -312,7 +316,7 @@ Create tiny entry points for tools in //bin:
 
 ```python
 # Instead of a shell script, create a native stub
-finalize-stub --transform=0 -o bin/mytool template \
+finalize-stub --transform=0 -o bin/mytool -- template \
     my_workspace/tools/mytool
 ```
 

@@ -220,6 +220,7 @@ jobs:
              ./finalize-stub-x86_64-linux \
                --transform=0 \
                -o my-stub \
+               -- \
                runfiles-stub-x86_64-linux \
                /path/to/executable arg1 arg2
              ```
