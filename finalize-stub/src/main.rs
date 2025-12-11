@@ -23,7 +23,8 @@ fn find_nth_pattern(data: &[u8], pattern: &[u8], n: usize) -> Option<usize> {
                 return Some(pos + offset);
             }
             count += 1;
-            pos += offset + 1;
+            // Skip past the entire matched pattern to avoid overlapping matches
+            pos += offset + pattern.len();
         } else {
             break;
         }

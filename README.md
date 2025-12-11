@@ -275,8 +275,7 @@ EOF
 
 # Run
 RUNFILES_MANIFEST_FILE=manifest.txt ./echo_stub
-# Output: @Hello, World!
-# (@ prefix means arg1 was not transformed)
+# Output: Hello, World!
 ```
 
 ### Example 2: Full Transformation
