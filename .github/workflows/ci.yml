@@ -213,6 +213,17 @@ jobs:
           EOF
           RUNFILES_MANIFEST_FILE=manifest.txt ./test-stub-x86_64
 
+      - name: Trace syscalls with strace (x86_64)
+        run: |
+          echo "Running x86_64 stub under strace to validate execve syscall..."
+          cat > manifest.txt << 'EOF'
+          /bin/echo /bin/echo
+          EOF
+          strace -f -e trace=execve RUNFILES_MANIFEST_FILE=manifest.txt ./test-stub-x86_64 2>&1 | grep execve || true
+          echo ""
+          echo "Full strace output for verification:"
+          strace -f RUNFILES_MANIFEST_FILE=manifest.txt ./test-stub-x86_64 2>&1 | head -50
+
   test-macos:
     name: Test on macOS
     needs: merge-artifacts
