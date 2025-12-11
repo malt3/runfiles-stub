@@ -697,13 +697,26 @@ pub extern "C" fn _start() -> ! {
             transform_flags = 0xFFFFFFFF; // Transform all by default
         }
 
-        // Initialize runfiles
-        let runfiles = if let Some(rf) = Runfiles::create() {
-            rf
+        // Check if any arguments need transformation
+        // Create a mask for only the arguments we have (argc args)
+        let argc_mask = if argc >= 32 {
+            0xFFFFFFFF
         } else {
-            print(b"ERROR: Failed to initialize runfiles\n");
-            print(b"Set RUNFILES_DIR or RUNFILES_MANIFEST_FILE\n");
-            exit(1);
+            (1u32 << argc) - 1
+        };
+        let needs_runfiles = (transform_flags & argc_mask) != 0;
+
+        // Initialize runfiles only if needed
+        let runfiles = if needs_runfiles {
+            if let Some(rf) = Runfiles::create() {
+                Some(rf)
+            } else {
+                print(b"ERROR: Failed to initialize runfiles\n");
+                print(b"Set RUNFILES_DIR or RUNFILES_MANIFEST_FILE\n");
+                exit(1);
+            }
+        } else {
+            None
         };
 
         // Get arg placeholders
@@ -743,11 +756,18 @@ pub extern "C" fn _start() -> ! {
             let should_transform = (transform_flags & (1 << i)) != 0;
 
             if should_transform {
-                // Try to resolve through runfiles
-                if let Some(resolved) = runfiles.rlocation(arg_slice) {
-                    resolved_paths[i] = resolved;
+                // Try to resolve through runfiles (which we know exists if we need transformation)
+                if let Some(ref rf) = runfiles {
+                    if let Some(resolved) = rf.rlocation(arg_slice) {
+                        resolved_paths[i] = resolved;
+                    } else {
+                        // If not found in runfiles, use the path as-is
+                        let copy_len = arg_len.min(MAX_PATH_LEN);
+                        resolved_paths[i][..copy_len].copy_from_slice(&arg_slice[..copy_len]);
+                    }
                 } else {
-                    // If not found in runfiles, use the path as-is
+                    // This should never happen - we checked needs_runfiles before
+                    // But use path as-is for safety
                     let copy_len = arg_len.min(MAX_PATH_LEN);
                     resolved_paths[i][..copy_len].copy_from_slice(&arg_slice[..copy_len]);
                 }
