@@ -40,6 +40,20 @@ pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     0
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
+    memcmp(s1, s2, n)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn strlen(s: *const u8) -> usize {
+    let mut len = 0;
+    while *s.add(len) != 0 {
+        len += 1;
+    }
+    len
+}
+
 // Syscall numbers - architecture specific
 #[cfg(target_arch = "x86_64")]
 mod syscall_numbers {
@@ -435,6 +449,9 @@ enum RunfilesMode {
 
 struct Runfiles {
     mode: RunfilesMode,
+    // Paths for environment variables (when export_runfiles_env is true)
+    manifest_path: Option<([u8; MAX_PATH_LEN], usize)>, // RUNFILES_MANIFEST_FILE
+    dir_path: Option<([u8; MAX_PATH_LEN], usize)>,      // RUNFILES_DIR and JAVA_RUNFILES
 }
 
 impl Runfiles {
@@ -450,6 +467,8 @@ impl Runfiles {
                 if let Some(manifest) = load_manifest(&path_with_null[..len + 1]) {
                     return Some(Self {
                         mode: RunfilesMode::ManifestBased(manifest),
+                        manifest_path: Some((manifest_path, len)),
+                        dir_path: None,
                     });
                 }
             }
@@ -461,6 +480,8 @@ impl Runfiles {
             if len > 0 {
                 return Some(Self {
                     mode: RunfilesMode::DirectoryBased(runfiles_dir, len),
+                    manifest_path: None,
+                    dir_path: Some((runfiles_dir, len)),
                 });
             }
         }
@@ -468,7 +489,7 @@ impl Runfiles {
         // Try to infer runfiles directory from executable path
         // Pattern: <executable_path>.runfiles/
         if let Some(exe_path) = executable_path {
-            let exe_len = strlen(exe_path);
+            let exe_len = str_len(exe_path);
             if exe_len > 0 && exe_len + 10 < MAX_PATH_LEN {  // +10 for ".runfiles\0"
                 let mut runfiles_dir = [0u8; MAX_PATH_LEN];
 
@@ -486,6 +507,8 @@ impl Runfiles {
                     // Remove null terminator for internal storage
                     return Some(Self {
                         mode: RunfilesMode::DirectoryBased(runfiles_dir, exe_len + 9),
+                        manifest_path: None,
+                        dir_path: Some((runfiles_dir, exe_len + 9)),
                     });
                 }
             }
@@ -549,6 +572,10 @@ static mut TRANSFORM_FLAGS: [u8; 32] = *b"@@RUNFILES_TRANSFORM_FLAGS@@\0\0\0\0";
 
 #[used]
 #[link_section = ".runfiles_stubs"]
+static mut EXPORT_RUNFILES_ENV: [u8; 32] = *b"@@RUNFILES_EXPORT_ENV@@\0\0\0\0\0\0\0\0\0";
+
+#[used]
+#[link_section = ".runfiles_stubs"]
 static mut ARG0_PLACEHOLDER: [u8; ARG_SIZE] = [b'@'; ARG_SIZE];
 
 #[used]
@@ -587,8 +614,8 @@ static mut ARG8_PLACEHOLDER: [u8; ARG_SIZE] = [b'@'; ARG_SIZE];
 #[link_section = ".runfiles_stubs"]
 static mut ARG9_PLACEHOLDER: [u8; ARG_SIZE] = [b'@'; ARG_SIZE];
 
-// Get the length of a null-terminated string
-fn strlen(s: &[u8]) -> usize {
+// Get the length of a null-terminated string (Rust-style, takes slice)
+fn str_len(s: &[u8]) -> usize {
     let mut len = 0;
     while len < s.len() && s[len] != 0 {
         len += 1;
@@ -662,6 +689,98 @@ fn get_environ() -> *const *const u8 {
     }
 }
 
+// Build modified environment with runfiles variables
+// Storage for modified environment
+static mut MODIFIED_ENV_DATA: [u8; MAX_ENV_SIZE] = [0; MAX_ENV_SIZE];
+static mut MODIFIED_ENV_PTRS: [*const u8; MAX_ENV_VARS + 1] = [core::ptr::null(); MAX_ENV_VARS + 1];
+
+fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *const *const u8 {
+    unsafe {
+        let base_env = get_environ();
+
+        // If no runfiles info, just return base environment
+        let rf = match runfiles {
+            Some(r) => r,
+            None => return base_env,
+        };
+
+        let mut new_env_count = 0;
+        let mut data_pos = 0;
+
+        // Helper to add an environment variable
+        let mut add_env_var = |name: &[u8], value: &[u8]| {
+            if data_pos + name.len() + 1 + value.len() + 1 > MAX_ENV_SIZE {
+                return false; // Out of space
+            }
+            if new_env_count >= MAX_ENV_VARS {
+                return false; // Too many vars
+            }
+
+            // Mark start of this var
+            MODIFIED_ENV_PTRS[new_env_count] = MODIFIED_ENV_DATA.as_ptr().add(data_pos);
+            new_env_count += 1;
+
+            // Copy name=value
+            MODIFIED_ENV_DATA[data_pos..data_pos + name.len()].copy_from_slice(name);
+            data_pos += name.len();
+            MODIFIED_ENV_DATA[data_pos] = b'=';
+            data_pos += 1;
+            MODIFIED_ENV_DATA[data_pos..data_pos + value.len()].copy_from_slice(value);
+            data_pos += value.len();
+            MODIFIED_ENV_DATA[data_pos] = 0;
+            data_pos += 1;
+
+            true
+        };
+
+        // Add runfiles environment variables first
+        if let Some((path, len)) = rf.manifest_path {
+            add_env_var(b"RUNFILES_MANIFEST_FILE", &path[..len]);
+        }
+
+        if let Some((path, len)) = rf.dir_path {
+            add_env_var(b"RUNFILES_DIR", &path[..len]);
+            add_env_var(b"JAVA_RUNFILES", &path[..len]);
+        }
+
+        // Copy existing environment (skip runfiles vars that we're setting)
+        let mut i = 0;
+        while !(*base_env.add(i)).is_null() {
+            let env_ptr = *base_env.add(i);
+            let mut env_len = 0;
+            while *env_ptr.add(env_len) != 0 {
+                env_len += 1;
+            }
+
+            let env_slice = core::slice::from_raw_parts(env_ptr, env_len);
+
+            // Skip if this is a runfiles var we're replacing
+            let is_runfiles_var = env_slice.starts_with(b"RUNFILES_MANIFEST_FILE=")
+                || env_slice.starts_with(b"RUNFILES_DIR=")
+                || env_slice.starts_with(b"JAVA_RUNFILES=");
+
+            if !is_runfiles_var {
+                if data_pos + env_len + 1 <= MAX_ENV_SIZE && new_env_count < MAX_ENV_VARS {
+                    MODIFIED_ENV_PTRS[new_env_count] = MODIFIED_ENV_DATA.as_ptr().add(data_pos);
+                    new_env_count += 1;
+
+                    MODIFIED_ENV_DATA[data_pos..data_pos + env_len].copy_from_slice(env_slice);
+                    data_pos += env_len;
+                    MODIFIED_ENV_DATA[data_pos] = 0;
+                    data_pos += 1;
+                }
+            }
+
+            i += 1;
+        }
+
+        // Null-terminate the pointer array
+        MODIFIED_ENV_PTRS[new_env_count] = core::ptr::null();
+
+        MODIFIED_ENV_PTRS.as_ptr()
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
     ".global _start",
@@ -695,7 +814,7 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
 
         // Parse argc from placeholder
         let argc_str = &ARGC_PLACEHOLDER;
-        let argc_len = strlen(argc_str);
+        let argc_len = str_len(argc_str);
         if argc_len == 0 {
             print(b"ERROR: ARGC is empty\n");
             exit(1);
@@ -720,7 +839,7 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
 
         // Parse transform flags (bitmask of which args to transform)
         let flags_str = &TRANSFORM_FLAGS;
-        let flags_len = strlen(flags_str);
+        let flags_len = str_len(flags_str);
         let mut transform_flags: u32 = 0;
 
         if !is_template_placeholder(flags_str) && flags_len > 0 {
@@ -740,6 +859,15 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
             transform_flags = 0xFFFFFFFF; // Transform all by default
         }
 
+        // Parse export_runfiles_env flag
+        let export_env_str = &EXPORT_RUNFILES_ENV;
+        let export_env_len = str_len(export_env_str);
+        let export_runfiles_env = if !is_template_placeholder(export_env_str) && export_env_len > 0 {
+            export_env_str[0] == b'1'
+        } else {
+            true // Default to true if not set
+        };
+
         // Check if any arguments need transformation
         // Create a mask for only the arguments we have (argc args)
         let argc_mask = if argc >= 32 {
@@ -747,7 +875,8 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
         } else {
             (1u32 << argc) - 1
         };
-        let needs_runfiles = (transform_flags & argc_mask) != 0;
+        let needs_transform = (transform_flags & argc_mask) != 0;
+        let needs_runfiles = needs_transform || export_runfiles_env;
 
         // Get executable path from runtime argv[0] (the stub's actual path) for runfiles fallback
         let executable_path = if runtime_argc > 0 {
@@ -800,7 +929,7 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
         // Resolve embedded arguments
         for i in 0..argc {
             let arg_data = arg_placeholders[i];
-            let arg_len = strlen(arg_data);
+            let arg_len = str_len(arg_data);
 
             if arg_len == 0 {
                 print(b"ERROR: Argument ");
@@ -874,8 +1003,15 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
         // Get the executable path (first argument)
         let executable = resolved_ptrs[0];
 
+        // Build environment (with runfiles vars if export_runfiles_env is true)
+        let envp = if export_runfiles_env {
+            build_runfiles_environ(runfiles.as_ref())
+        } else {
+            get_environ()
+        };
+
         // Execute the target program
-        let ret = execve(executable, resolved_ptrs.as_ptr(), get_environ());
+        let ret = execve(executable, resolved_ptrs.as_ptr(), envp);
 
         // If execve returns, it failed
         print(b"ERROR: execve failed with code ");

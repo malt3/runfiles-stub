@@ -243,6 +243,106 @@ jobs:
           echo "Full strace output for verification:"
           RUNFILES_MANIFEST_FILE=manifest.txt strace -f ./test-stub-x86_64 2>&1 | head -50
 
+      - name: Test environment variable export (enabled)
+        run: |
+          echo "=== Testing Environment Variable Export (enabled) ==="
+
+          # Create a script that prints runfiles environment variables
+          cat > /tmp/print-env.sh << 'EOF'
+          #!/bin/bash
+          echo "RUNFILES_DIR=${RUNFILES_DIR}"
+          echo "RUNFILES_MANIFEST_FILE=${RUNFILES_MANIFEST_FILE}"
+          echo "JAVA_RUNFILES=${JAVA_RUNFILES}"
+          EOF
+          chmod +x /tmp/print-env.sh
+
+          # Create stub with export enabled (default)
+          ./binaries/finalize-stub-x86_64-linux \
+            --template binaries/runfiles-stub-x86_64-linux \
+            --transform 0 \
+            --export-runfiles-env true \
+            --output test-export-enabled \
+            -- \
+            /tmp/print-env.sh
+          chmod +x test-export-enabled
+
+          # Test with manifest-based runfiles
+          echo ""
+          echo "Test 1: Manifest-based mode"
+          cat > test-manifest.txt << 'EOF'
+          /tmp/print-env.sh /tmp/print-env.sh
+          EOF
+          echo "Output from child process:"
+          RUNFILES_MANIFEST_FILE=test-manifest.txt ./test-export-enabled > export-test-manifest.txt
+          cat export-test-manifest.txt
+
+          # Verify RUNFILES_MANIFEST_FILE is exported
+          if grep -q "RUNFILES_MANIFEST_FILE=test-manifest.txt" export-test-manifest.txt; then
+            echo "✓ RUNFILES_MANIFEST_FILE correctly exported"
+          else
+            echo "✗ ERROR: RUNFILES_MANIFEST_FILE not exported"
+            exit 1
+          fi
+
+          # Test with directory-based fallback
+          echo ""
+          echo "Test 2: Directory-based fallback mode"
+          mkdir -p test-export-enabled.runfiles
+          echo "Output from child process:"
+          env -i ./test-export-enabled > export-test-fallback.txt
+          cat export-test-fallback.txt
+
+          # Verify RUNFILES_DIR is exported with fallback directory
+          if grep -q "RUNFILES_DIR=.*test-export-enabled.runfiles" export-test-fallback.txt; then
+            echo "✓ RUNFILES_DIR correctly exported (fallback)"
+          else
+            echo "✗ ERROR: RUNFILES_DIR not exported in fallback mode"
+            cat export-test-fallback.txt
+            exit 1
+          fi
+
+          # Verify JAVA_RUNFILES is also exported
+          if grep -q "JAVA_RUNFILES=.*test-export-enabled.runfiles" export-test-fallback.txt; then
+            echo "✓ JAVA_RUNFILES correctly exported"
+          else
+            echo "✗ ERROR: JAVA_RUNFILES not exported"
+            exit 1
+          fi
+
+      - name: Test environment variable export (disabled)
+        run: |
+          echo "=== Testing Environment Variable Export (disabled) ==="
+
+          # Create stub with export disabled
+          ./binaries/finalize-stub-x86_64-linux \
+            --template binaries/runfiles-stub-x86_64-linux \
+            --transform 0 \
+            --export-runfiles-env false \
+            --output test-export-disabled \
+            -- \
+            /tmp/print-env.sh
+          chmod +x test-export-disabled
+
+          # Test with empty environment and fallback directory
+          mkdir -p test-export-disabled.runfiles
+          echo "Output from child process (export disabled):"
+          env -i ./test-export-disabled > export-test-disabled.txt
+          cat export-test-disabled.txt
+
+          # Verify environment variables are NOT exported
+          if grep -q "RUNFILES_DIR=$" export-test-disabled.txt && \
+             grep -q "RUNFILES_MANIFEST_FILE=$" export-test-disabled.txt && \
+             grep -q "JAVA_RUNFILES=$" export-test-disabled.txt; then
+            echo "✓ Environment variables correctly NOT exported"
+          else
+            echo "✗ ERROR: Environment variables were exported when they should not be"
+            cat export-test-disabled.txt
+            exit 1
+          fi
+
+          echo ""
+          echo "✓ All environment export tests passed!"
+
       - name: Cross-platform finalization test - finalize all templates
         run: |
           echo "=== Cross-platform Finalization Test ==="
@@ -386,6 +486,122 @@ jobs:
           /bin/echo /bin/echo
           EOF
           RUNFILES_MANIFEST_FILE=manifest.txt ./test-stub-macos
+
+      - name: Test environment variable export (enabled)
+        run: |
+          if [ "${{ steps.arch.outputs.arch }}" = "arm64" ]; then
+            FINALIZER="binaries/finalize-stub-aarch64-macos"
+            TEMPLATE="binaries/runfiles-stub-aarch64-macos"
+          else
+            FINALIZER="binaries/finalize-stub-x86_64-macos"
+            TEMPLATE="binaries/runfiles-stub-x86_64-macos"
+          fi
+
+          echo "=== Testing Environment Variable Export (enabled) ==="
+
+          # Create a script that prints runfiles environment variables
+          cat > /tmp/print-env.sh << 'EOF'
+          #!/bin/bash
+          echo "RUNFILES_DIR=${RUNFILES_DIR}"
+          echo "RUNFILES_MANIFEST_FILE=${RUNFILES_MANIFEST_FILE}"
+          echo "JAVA_RUNFILES=${JAVA_RUNFILES}"
+          EOF
+          chmod +x /tmp/print-env.sh
+
+          # Create stub with export enabled (default)
+          $FINALIZER \
+            --template $TEMPLATE \
+            --transform 0 \
+            --export-runfiles-env true \
+            --output test-export-enabled \
+            -- \
+            /tmp/print-env.sh
+          chmod +x test-export-enabled
+
+          # Test with manifest-based runfiles
+          echo ""
+          echo "Test 1: Manifest-based mode"
+          cat > test-manifest.txt << 'EOF'
+          /tmp/print-env.sh /tmp/print-env.sh
+          EOF
+          echo "Output from child process:"
+          RUNFILES_MANIFEST_FILE=test-manifest.txt ./test-export-enabled > export-test-manifest.txt
+          cat export-test-manifest.txt
+
+          # Verify RUNFILES_MANIFEST_FILE is exported
+          if grep -q "RUNFILES_MANIFEST_FILE=test-manifest.txt" export-test-manifest.txt; then
+            echo "✓ RUNFILES_MANIFEST_FILE correctly exported"
+          else
+            echo "✗ ERROR: RUNFILES_MANIFEST_FILE not exported"
+            exit 1
+          fi
+
+          # Test with directory-based fallback
+          echo ""
+          echo "Test 2: Directory-based fallback mode"
+          mkdir -p test-export-enabled.runfiles
+          echo "Output from child process:"
+          env -i ./test-export-enabled > export-test-fallback.txt
+          cat export-test-fallback.txt
+
+          # Verify RUNFILES_DIR is exported with fallback directory
+          if grep -q "RUNFILES_DIR=.*test-export-enabled.runfiles" export-test-fallback.txt; then
+            echo "✓ RUNFILES_DIR correctly exported (fallback)"
+          else
+            echo "✗ ERROR: RUNFILES_DIR not exported in fallback mode"
+            cat export-test-fallback.txt
+            exit 1
+          fi
+
+          # Verify JAVA_RUNFILES is also exported
+          if grep -q "JAVA_RUNFILES=.*test-export-enabled.runfiles" export-test-fallback.txt; then
+            echo "✓ JAVA_RUNFILES correctly exported"
+          else
+            echo "✗ ERROR: JAVA_RUNFILES not exported"
+            exit 1
+          fi
+
+      - name: Test environment variable export (disabled)
+        run: |
+          if [ "${{ steps.arch.outputs.arch }}" = "arm64" ]; then
+            FINALIZER="binaries/finalize-stub-aarch64-macos"
+            TEMPLATE="binaries/runfiles-stub-aarch64-macos"
+          else
+            FINALIZER="binaries/finalize-stub-x86_64-macos"
+            TEMPLATE="binaries/runfiles-stub-x86_64-macos"
+          fi
+
+          echo "=== Testing Environment Variable Export (disabled) ==="
+
+          # Create stub with export disabled
+          $FINALIZER \
+            --template $TEMPLATE \
+            --transform 0 \
+            --export-runfiles-env false \
+            --output test-export-disabled \
+            -- \
+            /tmp/print-env.sh
+          chmod +x test-export-disabled
+
+          # Test with empty environment and fallback directory
+          mkdir -p test-export-disabled.runfiles
+          echo "Output from child process (export disabled):"
+          env -i ./test-export-disabled > export-test-disabled.txt
+          cat export-test-disabled.txt
+
+          # Verify environment variables are NOT exported
+          if grep -q "RUNFILES_DIR=$" export-test-disabled.txt && \
+             grep -q "RUNFILES_MANIFEST_FILE=$" export-test-disabled.txt && \
+             grep -q "JAVA_RUNFILES=$" export-test-disabled.txt; then
+            echo "✓ Environment variables correctly NOT exported"
+          else
+            echo "✗ ERROR: Environment variables were exported when they should not be"
+            cat export-test-disabled.txt
+            exit 1
+          fi
+
+          echo ""
+          echo "✓ All environment export tests passed!"
 
       - name: Test finalizer with Linux templates (cross-platform)
         run: |
@@ -539,6 +755,109 @@ jobs:
           C:\Windows\System32\cmd.exe C:\Windows\System32\cmd.exe
           EOF
           RUNFILES_MANIFEST_FILE=manifest.txt ./test-stub-windows.exe
+
+      - name: Test environment variable export (enabled)
+        shell: bash
+        run: |
+          echo "=== Testing Environment Variable Export (enabled) ==="
+
+          # Create a batch script that prints runfiles environment variables
+          cat > /tmp/print-env.bat << 'EOF'
+          @echo off
+          echo RUNFILES_DIR=%RUNFILES_DIR%
+          echo RUNFILES_MANIFEST_FILE=%RUNFILES_MANIFEST_FILE%
+          echo JAVA_RUNFILES=%JAVA_RUNFILES%
+          EOF
+          chmod +x /tmp/print-env.bat
+
+          # Create stub with export enabled (default)
+          ./binaries/finalize-stub-x86_64-windows.exe \
+            --template binaries/runfiles-stub-x86_64-windows.exe \
+            --transform 0 \
+            --export-runfiles-env true \
+            --output test-export-enabled.exe \
+            -- \
+            /tmp/print-env.bat
+          chmod +x test-export-enabled.exe
+
+          # Test with manifest-based runfiles
+          echo ""
+          echo "Test 1: Manifest-based mode"
+          cat > test-manifest.txt << 'EOF'
+          /tmp/print-env.bat /tmp/print-env.bat
+          EOF
+          echo "Output from child process:"
+          RUNFILES_MANIFEST_FILE=test-manifest.txt ./test-export-enabled.exe > export-test-manifest.txt
+          cat export-test-manifest.txt
+
+          # Verify RUNFILES_MANIFEST_FILE is exported
+          if grep -q "RUNFILES_MANIFEST_FILE=test-manifest.txt" export-test-manifest.txt; then
+            echo "✓ RUNFILES_MANIFEST_FILE correctly exported"
+          else
+            echo "✗ ERROR: RUNFILES_MANIFEST_FILE not exported"
+            cat export-test-manifest.txt
+            exit 1
+          fi
+
+          # Test with directory-based fallback
+          echo ""
+          echo "Test 2: Directory-based fallback mode"
+          mkdir -p test-export-enabled.exe.runfiles
+          echo "Output from child process:"
+          env -i ./test-export-enabled.exe > export-test-fallback.txt
+          cat export-test-fallback.txt
+
+          # Verify RUNFILES_DIR is exported with fallback directory (Windows paths may vary)
+          if grep -q "RUNFILES_DIR=" export-test-fallback.txt && grep "RUNFILES_DIR=" export-test-fallback.txt | grep -v "RUNFILES_DIR=$"; then
+            echo "✓ RUNFILES_DIR correctly exported (fallback)"
+          else
+            echo "✗ ERROR: RUNFILES_DIR not exported in fallback mode"
+            cat export-test-fallback.txt
+            exit 1
+          fi
+
+          # Verify JAVA_RUNFILES is also exported
+          if grep -q "JAVA_RUNFILES=" export-test-fallback.txt && grep "JAVA_RUNFILES=" export-test-fallback.txt | grep -v "JAVA_RUNFILES=$"; then
+            echo "✓ JAVA_RUNFILES correctly exported"
+          else
+            echo "✗ ERROR: JAVA_RUNFILES not exported"
+            exit 1
+          fi
+
+      - name: Test environment variable export (disabled)
+        shell: bash
+        run: |
+          echo "=== Testing Environment Variable Export (disabled) ==="
+
+          # Create stub with export disabled
+          ./binaries/finalize-stub-x86_64-windows.exe \
+            --template binaries/runfiles-stub-x86_64-windows.exe \
+            --transform 0 \
+            --export-runfiles-env false \
+            --output test-export-disabled.exe \
+            -- \
+            /tmp/print-env.bat
+          chmod +x test-export-disabled.exe
+
+          # Test with empty environment and fallback directory
+          mkdir -p test-export-disabled.exe.runfiles
+          echo "Output from child process (export disabled):"
+          env -i ./test-export-disabled.exe > export-test-disabled.txt
+          cat export-test-disabled.txt
+
+          # Verify environment variables are NOT exported (Windows batch shows undefined as %VAR%)
+          if (grep -q "RUNFILES_DIR=$" export-test-disabled.txt || grep -q "RUNFILES_DIR=%RUNFILES_DIR%" export-test-disabled.txt) && \
+             (grep -q "RUNFILES_MANIFEST_FILE=$" export-test-disabled.txt || grep -q "RUNFILES_MANIFEST_FILE=%RUNFILES_MANIFEST_FILE%" export-test-disabled.txt) && \
+             (grep -q "JAVA_RUNFILES=$" export-test-disabled.txt || grep -q "JAVA_RUNFILES=%JAVA_RUNFILES%" export-test-disabled.txt); then
+            echo "✓ Environment variables correctly NOT exported"
+          else
+            echo "✗ ERROR: Environment variables were exported when they should not be"
+            cat export-test-disabled.txt
+            exit 1
+          fi
+
+          echo ""
+          echo "✓ All environment export tests passed!"
 
       - name: Cross-platform finalization test - finalize all templates
         shell: bash

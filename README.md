@@ -171,16 +171,22 @@ finalize-stub --template template --transform 0,2 --output my_tool -- /bin/tool 
 ### Options
 
 ```
---template <PATH>     Path to template runfiles-stub binary (required)
+--template <PATH>           Path to template runfiles-stub binary (required)
 
---transform <N>       Mark argument N for runfiles resolution (0-9)
-                      Can be repeated for multiple arguments (--transform 0 --transform 2)
-                      or comma-separated (--transform 0,2)
-                      Default: no arguments are transformed
+--transform <N>             Mark argument N for runfiles resolution (0-9)
+                            Can be repeated for multiple arguments (--transform 0 --transform 2)
+                            or comma-separated (--transform 0,2)
+                            Default: no arguments are transformed
 
---output <PATH>       Output file path (default: stdout)
+--export-runfiles-env       Export runfiles environment variables to child process
+                            Values: true (default) or false
+                            When true: RUNFILES_DIR, RUNFILES_MANIFEST_FILE, and JAVA_RUNFILES
+                            are set in the child process based on discovered runfiles
+                            When false: child process inherits environment unchanged
 
---                    Separates flags from positional arguments (recommended)
+--output <PATH>             Output file path (default: stdout)
+
+--                          Separates flags from positional arguments (recommended)
 ```
 
 ### Runtime Arguments
@@ -200,7 +206,7 @@ This is like bash `$@` - embedded args come first, runtime args are appended.
 
 ### Runfiles Environment
 
-Stubs require runfiles environment variables:
+Stubs discover runfiles through environment variables or automatic detection:
 
 ```bash
 # Manifest-based (file maps runfiles paths to absolute paths)
@@ -208,6 +214,34 @@ RUNFILES_MANIFEST_FILE=/path/to/manifest.txt ./stub
 
 # Directory-based (simple directory layout)
 RUNFILES_DIR=/path/to/runfiles ./stub
+
+# Automatic fallback (discovers <stub>.runfiles/ directory)
+./stub  # Looks for ./stub.runfiles/ automatically
+```
+
+#### Environment Variable Export
+
+By default (`--export-runfiles-env=true`), stubs export runfiles environment variables to the child process:
+
+```bash
+# Create stub with export enabled (default)
+finalize-stub --template template --transform 0 --output stub -- tool
+
+# Child process receives:
+#   RUNFILES_MANIFEST_FILE (if manifest-based)
+#   RUNFILES_DIR (if directory-based or fallback)
+#   JAVA_RUNFILES (same as RUNFILES_DIR)
+```
+
+This allows child processes to use Bazel's runfiles libraries without manual environment setup.
+
+To disable export and keep the environment unchanged:
+
+```bash
+# Create stub with export disabled
+finalize-stub --template template --export-runfiles-env=false --output stub -- tool
+
+# Child process inherits parent environment unchanged
 ```
 
 ## Building from Source

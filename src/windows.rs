@@ -301,6 +301,9 @@ enum RunfilesMode {
 
 struct Runfiles {
     mode: RunfilesMode,
+    // Paths for environment variables (when export_runfiles_env is true)
+    manifest_path: Option<([u8; MAX_PATH_LEN], usize)>, // RUNFILES_MANIFEST_FILE
+    dir_path: Option<([u8; MAX_PATH_LEN], usize)>,      // RUNFILES_DIR and JAVA_RUNFILES
 }
 
 impl Runfiles {
@@ -313,6 +316,8 @@ impl Runfiles {
                 if let Some(manifest) = load_manifest(&manifest_path[..len]) {
                     return Some(Self {
                         mode: RunfilesMode::ManifestBased(manifest),
+                        manifest_path: Some((manifest_path, len)),
+                        dir_path: None,
                     });
                 }
             }
@@ -324,6 +329,8 @@ impl Runfiles {
             if len > 0 {
                 return Some(Self {
                     mode: RunfilesMode::DirectoryBased(runfiles_dir, len),
+                    manifest_path: None,
+                    dir_path: Some((runfiles_dir, len)),
                 });
             }
         }
@@ -359,6 +366,8 @@ impl Runfiles {
                         // Remove null terminator for internal storage
                         return Some(Self {
                             mode: RunfilesMode::DirectoryBased(runfiles_dir, exe_len + 9),
+                            manifest_path: None,
+                            dir_path: Some((runfiles_dir, exe_len + 9)),
                         });
                     }
                 }
@@ -412,6 +421,118 @@ impl Runfiles {
     }
 }
 
+// Environment building for export mode
+const MAX_ENV_SIZE: usize = 16384;
+const MAX_ENV_VARS: usize = 256;
+
+// External Windows API function for environment access
+extern "system" {
+    fn GetEnvironmentStringsA() -> *mut u8;
+    fn FreeEnvironmentStringsA(lpszEnvironmentBlock: *mut u8) -> BOOL;
+}
+
+static mut MODIFIED_ENV_DATA: [u8; MAX_ENV_SIZE] = [0; MAX_ENV_SIZE];
+
+fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void {
+    unsafe {
+        let mut data_pos = 0usize;
+
+        // Helper to add an environment variable
+        let mut add_env_var = |key: &[u8], value: &[u8]| {
+            let entry_len = key.len() + 1 + value.len() + 1; // "KEY=VALUE\0"
+            if data_pos + entry_len > MAX_ENV_SIZE {
+                return false;
+            }
+
+            // Copy key
+            MODIFIED_ENV_DATA[data_pos..data_pos + key.len()].copy_from_slice(key);
+            data_pos += key.len();
+
+            // Add '='
+            MODIFIED_ENV_DATA[data_pos] = b'=';
+            data_pos += 1;
+
+            // Copy value
+            MODIFIED_ENV_DATA[data_pos..data_pos + value.len()].copy_from_slice(value);
+            data_pos += value.len();
+
+            // Null terminate
+            MODIFIED_ENV_DATA[data_pos] = 0;
+            data_pos += 1;
+
+            true
+        };
+
+        // Add RUNFILES_MANIFEST_FILE if we have it
+        if let Some(rf) = runfiles {
+            if let Some((ref path, len)) = rf.manifest_path {
+                add_env_var(b"RUNFILES_MANIFEST_FILE", &path[..len]);
+            }
+        }
+
+        // Add RUNFILES_DIR if we have it
+        if let Some(rf) = runfiles {
+            if let Some((ref path, len)) = rf.dir_path {
+                add_env_var(b"RUNFILES_DIR", &path[..len]);
+                add_env_var(b"JAVA_RUNFILES", &path[..len]);
+            }
+        }
+
+        // Copy existing environment, filtering out runfiles vars
+        let env_block = GetEnvironmentStringsA();
+        if !env_block.is_null() {
+            let mut pos = 0;
+
+            // Environment block is a series of null-terminated strings, ending with empty string
+            loop {
+                // Find the next null terminator
+                let entry_start = pos;
+                while *env_block.add(pos) != 0 {
+                    pos += 1;
+                    if pos > 32768 {  // Safety limit
+                        break;
+                    }
+                }
+
+                let entry_len = pos - entry_start;
+                if entry_len == 0 {
+                    // Empty string marks end of environment block
+                    break;
+                }
+
+                let entry = core::slice::from_raw_parts(env_block.add(entry_start), entry_len);
+
+                // Check if this is a runfiles variable we should skip
+                let should_skip = str_starts_with(entry, b"RUNFILES_MANIFEST_FILE=")
+                    || str_starts_with(entry, b"RUNFILES_DIR=")
+                    || str_starts_with(entry, b"JAVA_RUNFILES=");
+
+                if !should_skip {
+                    // Copy this environment variable
+                    if data_pos + entry_len + 1 <= MAX_ENV_SIZE {
+                        MODIFIED_ENV_DATA[data_pos..data_pos + entry_len].copy_from_slice(entry);
+                        MODIFIED_ENV_DATA[data_pos + entry_len] = 0;
+                        data_pos += entry_len + 1;
+                    }
+                }
+
+                pos += 1; // Skip past the null terminator
+            }
+
+            FreeEnvironmentStringsA(env_block);
+        }
+
+        // Add final double null terminator to mark end of environment block
+        // Windows requires two null bytes: one to end the last variable, one to end the block
+        if data_pos + 1 < MAX_ENV_SIZE {
+            MODIFIED_ENV_DATA[data_pos] = 0;
+            MODIFIED_ENV_DATA[data_pos + 1] = 0;
+        }
+
+        MODIFIED_ENV_DATA.as_mut_ptr() as *mut core::ffi::c_void
+    }
+}
+
 // Placeholders for stub runner (will be replaced in final binary)
 const ARG_SIZE: usize = 256;
 
@@ -422,6 +543,10 @@ static mut ARGC_PLACEHOLDER: [u8; 32] = *b"@@RUNFILES_ARGC@@\0\0\0\0\0\0\0\0\0\0
 #[used]
 #[link_section = ".runfiles"]
 static mut TRANSFORM_FLAGS: [u8; 32] = *b"@@RUNFILES_TRANSFORM_FLAGS@@\0\0\0\0";
+
+#[used]
+#[link_section = ".runfiles"]
+static mut EXPORT_RUNFILES_ENV: [u8; 32] = *b"@@RUNFILES_EXPORT_ENV@@\0\0\0\0\0\0\0\0\0";
 
 #[used]
 #[link_section = ".runfiles"]
@@ -585,13 +710,24 @@ pub extern "C" fn main() -> ! {
             transform_flags = 0xFFFFFFFF; // Transform all by default
         }
 
+        // Parse export_runfiles_env flag (defaults to true)
+        let export_str = &EXPORT_RUNFILES_ENV;
+        let export_len = strlen(export_str);
+        let export_runfiles_env = if !is_template_placeholder(export_str) && export_len > 0 {
+            // Parse as "1" (true) or "0" (false)
+            export_str[0] != b'0'
+        } else {
+            true // Default to true
+        };
+
         // Check if any arguments need transformation
         let argc_mask = if argc >= 32 {
             0xFFFFFFFF
         } else {
             (1u32 << argc) - 1
         };
-        let needs_runfiles = (transform_flags & argc_mask) != 0;
+        let needs_transform = (transform_flags & argc_mask) != 0;
+        let needs_runfiles = needs_transform || export_runfiles_env;
 
         // Get executable path from runtime argv[0] for runfiles fallback
         // Convert from UTF-16 to UTF-8/ASCII (simple conversion, assumes ASCII path)
@@ -775,6 +911,13 @@ pub extern "C" fn main() -> ! {
         let exe_len = strlen(&resolved_paths[0]);
         utf8_to_wide(&resolved_paths[0][..exe_len], &mut exe_path_wide);
 
+        // Build environment with runfiles variables if export is enabled
+        let envp = if export_runfiles_env {
+            build_runfiles_environ(runfiles.as_ref())
+        } else {
+            core::ptr::null_mut()
+        };
+
         // Create the process
         let mut si: STARTUPINFOA = core::mem::zeroed();
         si.cb = core::mem::size_of::<STARTUPINFOA>() as DWORD;
@@ -787,7 +930,7 @@ pub extern "C" fn main() -> ! {
             core::ptr::null_mut(),      // Thread attributes
             1,                          // Inherit handles
             0,                          // Creation flags
-            core::ptr::null_mut(),      // Environment
+            envp,                       // Environment
             core::ptr::null(),          // Current directory
             &mut si,
             &mut pi,

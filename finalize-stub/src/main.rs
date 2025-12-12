@@ -35,6 +35,10 @@ struct Cli {
     #[arg(long, action = ArgAction::Append, value_delimiter = ',', value_parser = clap::value_parser!(u32).range(0..10))]
     transform: Vec<u32>,
 
+    /// Export runfiles environment variables (RUNFILES_DIR, RUNFILES_MANIFEST_FILE, JAVA_RUNFILES) to the executed process
+    #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
+    export_runfiles_env: bool,
+
     /// Enable verbose output
     #[arg(short, long)]
     verbose: bool,
@@ -88,7 +92,7 @@ fn replace_at(data: &mut [u8], offset: usize, new_value: &[u8], fixed_size: usiz
     Ok(())
 }
 
-fn finalize_stub(template_path: &str, output_path: Option<&str>, argv: &[String], transform_flags: u32, verbose: bool) -> Result<(), String> {
+fn finalize_stub(template_path: &str, output_path: Option<&str>, argv: &[String], transform_flags: u32, export_runfiles_env: bool, verbose: bool) -> Result<(), String> {
     if argv.is_empty() {
         return Err("At least one argument (argv[0]) is required".to_string());
     }
@@ -134,6 +138,18 @@ fn finalize_stub(template_path: &str, output_path: Option<&str>, argv: &[String]
 
     if verbose {
         eprintln!("Replaced TRANSFORM_FLAGS with: {} (0b{:b})", flags_str, transform_flags);
+    }
+
+    // Find and replace EXPORT_RUNFILES_ENV
+    let export_pattern = b"@@RUNFILES_EXPORT_ENV@@";
+    let export_pos = find_pattern(&data, export_pattern)
+        .ok_or("EXPORT_RUNFILES_ENV placeholder not found in template")?;
+
+    let export_str = if export_runfiles_env { "1" } else { "0" };
+    replace_at(&mut data, export_pos, export_str.as_bytes(), 32)?;
+
+    if verbose {
+        eprintln!("Replaced EXPORT_RUNFILES_ENV with: {}", export_str);
     }
 
     // Find and replace ARG placeholders
@@ -201,7 +217,7 @@ fn main() {
         flags
     };
 
-    match finalize_stub(&cli.template, cli.output.as_deref(), &cli.args, transform_flags, cli.verbose) {
+    match finalize_stub(&cli.template, cli.output.as_deref(), &cli.args, transform_flags, cli.export_runfiles_env, cli.verbose) {
         Ok(()) => {
             if cli.verbose {
                 if let Some(output) = cli.output {

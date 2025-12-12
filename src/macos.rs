@@ -208,6 +208,9 @@ enum RunfilesMode {
 
 struct Runfiles {
     mode: RunfilesMode,
+    // Paths for environment variables (when export_runfiles_env is true)
+    manifest_path: Option<([u8; MAX_PATH_LEN], usize)>, // RUNFILES_MANIFEST_FILE
+    dir_path: Option<([u8; MAX_PATH_LEN], usize)>,      // RUNFILES_DIR and JAVA_RUNFILES
 }
 
 impl Runfiles {
@@ -223,6 +226,8 @@ impl Runfiles {
                 if let Some(manifest) = load_manifest(&path_with_null[..len + 1]) {
                     return Some(Self {
                         mode: RunfilesMode::ManifestBased(manifest),
+                        manifest_path: Some((manifest_path, len)),
+                        dir_path: None,
                     });
                 }
             }
@@ -234,6 +239,8 @@ impl Runfiles {
             if len > 0 {
                 return Some(Self {
                     mode: RunfilesMode::DirectoryBased(runfiles_dir, len),
+                    manifest_path: None,
+                    dir_path: Some((runfiles_dir, len)),
                 });
             }
         }
@@ -261,6 +268,8 @@ impl Runfiles {
                         // Remove null terminator for internal storage
                         return Some(Self {
                             mode: RunfilesMode::DirectoryBased(runfiles_dir, exe_len + 9),
+                            manifest_path: None,
+                            dir_path: Some((runfiles_dir, exe_len + 9)),
                         });
                     }
                 }
@@ -311,6 +320,110 @@ impl Runfiles {
     }
 }
 
+// Environment building for export mode
+const MAX_ENV_SIZE: usize = 16384;
+const MAX_ENV_VARS: usize = 256;
+
+static mut MODIFIED_ENV_DATA: [u8; MAX_ENV_SIZE] = [0; MAX_ENV_SIZE];
+static mut MODIFIED_ENV_PTRS: [*const u8; MAX_ENV_VARS + 1] = [core::ptr::null(); MAX_ENV_VARS + 1];
+
+fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *const *const u8 {
+    unsafe {
+        let mut data_pos = 0usize;
+        let mut ptr_idx = 0usize;
+
+        // Helper to add an environment variable
+        let mut add_env_var = |key: &[u8], value: &[u8]| {
+            if ptr_idx >= MAX_ENV_VARS {
+                return false;
+            }
+
+            let entry_len = key.len() + 1 + value.len() + 1; // "KEY=VALUE\0"
+            if data_pos + entry_len > MAX_ENV_SIZE {
+                return false;
+            }
+
+            let entry_start = data_pos;
+
+            // Copy key
+            MODIFIED_ENV_DATA[data_pos..data_pos + key.len()].copy_from_slice(key);
+            data_pos += key.len();
+
+            // Add '='
+            MODIFIED_ENV_DATA[data_pos] = b'=';
+            data_pos += 1;
+
+            // Copy value
+            MODIFIED_ENV_DATA[data_pos..data_pos + value.len()].copy_from_slice(value);
+            data_pos += value.len();
+
+            // Null terminate
+            MODIFIED_ENV_DATA[data_pos] = 0;
+            data_pos += 1;
+
+            // Store pointer
+            MODIFIED_ENV_PTRS[ptr_idx] = MODIFIED_ENV_DATA.as_ptr().add(entry_start);
+            ptr_idx += 1;
+
+            true
+        };
+
+        // Add RUNFILES_MANIFEST_FILE if we have it
+        if let Some(rf) = runfiles {
+            if let Some((ref path, len)) = rf.manifest_path {
+                add_env_var(b"RUNFILES_MANIFEST_FILE", &path[..len]);
+            }
+        }
+
+        // Add RUNFILES_DIR if we have it
+        if let Some(rf) = runfiles {
+            if let Some((ref path, len)) = rf.dir_path {
+                add_env_var(b"RUNFILES_DIR", &path[..len]);
+                add_env_var(b"JAVA_RUNFILES", &path[..len]);
+            }
+        }
+
+        // Copy existing environment, filtering out runfiles vars
+        let mut env_ptr = environ;
+        while !(*env_ptr).is_null() && ptr_idx < MAX_ENV_VARS {
+            let entry_ptr = *env_ptr;
+
+            // Find length of this entry
+            let mut len = 0;
+            while *entry_ptr.add(len) != 0 && len < 4096 {
+                len += 1;
+            }
+
+            let entry = core::slice::from_raw_parts(entry_ptr, len);
+
+            // Check if this is a runfiles variable we should skip
+            let should_skip = str_starts_with(entry, b"RUNFILES_MANIFEST_FILE=")
+                || str_starts_with(entry, b"RUNFILES_DIR=")
+                || str_starts_with(entry, b"JAVA_RUNFILES=");
+
+            if !should_skip {
+                // Copy this environment variable
+                if data_pos + len + 1 <= MAX_ENV_SIZE {
+                    MODIFIED_ENV_DATA[data_pos..data_pos + len].copy_from_slice(entry);
+                    MODIFIED_ENV_DATA[data_pos + len] = 0;
+
+                    MODIFIED_ENV_PTRS[ptr_idx] = MODIFIED_ENV_DATA.as_ptr().add(data_pos);
+                    ptr_idx += 1;
+
+                    data_pos += len + 1;
+                }
+            }
+
+            env_ptr = env_ptr.add(1);
+        }
+
+        // Null-terminate the pointer array
+        MODIFIED_ENV_PTRS[ptr_idx] = core::ptr::null();
+
+        MODIFIED_ENV_PTRS.as_ptr()
+    }
+}
+
 // Placeholders for stub runner (will be replaced in final binary)
 const ARG_SIZE: usize = 256;
 
@@ -321,6 +434,10 @@ static mut ARGC_PLACEHOLDER: [u8; 32] = *b"@@RUNFILES_ARGC@@\0\0\0\0\0\0\0\0\0\0
 #[used]
 #[link_section = "__DATA,__runfiles"]
 static mut TRANSFORM_FLAGS: [u8; 32] = *b"@@RUNFILES_TRANSFORM_FLAGS@@\0\0\0\0";
+
+#[used]
+#[link_section = "__DATA,__runfiles"]
+static mut EXPORT_RUNFILES_ENV: [u8; 32] = *b"@@RUNFILES_EXPORT_ENV@@\0\0\0\0\0\0\0\0\0";
 
 #[used]
 #[link_section = "__DATA,__runfiles"]
@@ -437,13 +554,24 @@ pub extern "C" fn main(runtime_argc: i32, runtime_argv: *const *const u8) -> ! {
             transform_flags = 0xFFFFFFFF; // Transform all by default
         }
 
+        // Parse export_runfiles_env flag (defaults to true)
+        let export_str = &EXPORT_RUNFILES_ENV;
+        let export_len = strlen(export_str);
+        let export_runfiles_env = if !is_template_placeholder(export_str) && export_len > 0 {
+            // Parse as "1" (true) or "0" (false)
+            export_str[0] != b'0'
+        } else {
+            true // Default to true
+        };
+
         // Check if any arguments need transformation
         let argc_mask = if argc >= 32 {
             0xFFFFFFFF
         } else {
             (1u32 << argc) - 1
         };
-        let needs_runfiles = (transform_flags & argc_mask) != 0;
+        let needs_transform = (transform_flags & argc_mask) != 0;
+        let needs_runfiles = needs_transform || export_runfiles_env;
 
         // Get executable path from runtime argv[0] for runfiles fallback
         let executable_path = if runtime_argc > 0 {
@@ -567,8 +695,15 @@ pub extern "C" fn main(runtime_argc: i32, runtime_argv: *const *const u8) -> ! {
         // Get the executable path (first argument)
         let executable = resolved_ptrs[0];
 
-        // Execute the target program with the original environment
-        let ret = execve(executable, resolved_ptrs.as_ptr(), environ);
+        // Build environment with runfiles variables if export is enabled
+        let envp = if export_runfiles_env {
+            build_runfiles_environ(runfiles.as_ref())
+        } else {
+            environ
+        };
+
+        // Execute the target program
+        let ret = execve(executable, resolved_ptrs.as_ptr(), envp);
 
         // If execve returns, it failed
         print(b"ERROR: execve failed with code ");
