@@ -745,6 +745,10 @@ jobs:
           cat > manifest.txt << 'EOF'
           C:\Windows\System32\cmd.exe C:\Windows\System32\cmd.exe
           EOF
+          echo "Checking if binary exists and is executable..."
+          ls -lh test-stub-windows.exe
+          file test-stub-windows.exe || true
+          echo "Attempting to run binary..."
           RUNFILES_MANIFEST_FILE=manifest.txt ./test-stub-windows.exe || echo "Exit code: $?"
 
       - name: Verify template is actually calling cmd
@@ -754,7 +758,15 @@ jobs:
           cat > manifest.txt << 'EOF'
           C:\Windows\System32\cmd.exe C:\Windows\System32\cmd.exe
           EOF
-          RUNFILES_MANIFEST_FILE=manifest.txt ./test-stub-windows.exe
+          echo "Debug: Manifest contents:"
+          cat manifest.txt
+          echo ""
+          echo "Debug: Trying to run with full path..."
+          RUNFILES_MANIFEST_FILE=manifest.txt "$(pwd)/test-stub-windows.exe" || {
+            echo "Failed with exit code: $?"
+            echo "Debug: Trying with cmd.exe wrapper..."
+            cmd.exe //C "set RUNFILES_MANIFEST_FILE=manifest.txt && test-stub-windows.exe"
+          }
 
       - name: Test environment variable export (enabled)
         shell: bash
