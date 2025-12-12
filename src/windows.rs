@@ -104,7 +104,84 @@ extern "system" {
 }
 
 // We don't use CommandLineToArgvW to avoid shell32.dll dependency
-// Instead we parse runtime args ourselves if needed
+// Instead we implement custom command-line parsing following Windows rules
+
+// Parse Windows command line into arguments
+// Returns number of arguments parsed (excluding argv[0])
+// Stores argument pointers in output array
+fn parse_command_line(
+    cmdline: *const u16,
+    argv_out: &mut [*const u16; 128],
+    argv_len_out: &mut [usize; 128],
+) -> usize {
+    unsafe {
+        let mut pos = 0usize;
+        let mut argc = 0usize;
+
+        // Skip leading whitespace
+        while *cmdline.add(pos) != 0 && (*cmdline.add(pos) == b' ' as u16 || *cmdline.add(pos) == b'\t' as u16) {
+            pos += 1;
+        }
+
+        // Skip argv[0] (executable path)
+        let quoted = *cmdline.add(pos) == b'"' as u16;
+        if quoted {
+            pos += 1; // Skip opening quote
+            while *cmdline.add(pos) != 0 && *cmdline.add(pos) != b'"' as u16 {
+                pos += 1;
+            }
+            if *cmdline.add(pos) == b'"' as u16 {
+                pos += 1; // Skip closing quote
+            }
+        } else {
+            while *cmdline.add(pos) != 0 && *cmdline.add(pos) != b' ' as u16 && *cmdline.add(pos) != b'\t' as u16 {
+                pos += 1;
+            }
+        }
+
+        // Parse remaining arguments
+        while *cmdline.add(pos) != 0 && argc < 128 {
+            // Skip whitespace
+            while *cmdline.add(pos) != 0 && (*cmdline.add(pos) == b' ' as u16 || *cmdline.add(pos) == b'\t' as u16) {
+                pos += 1;
+            }
+
+            if *cmdline.add(pos) == 0 {
+                break;
+            }
+
+            // Start of argument
+            let arg_start = pos;
+            let in_quotes = *cmdline.add(pos) == b'"' as u16;
+
+            if in_quotes {
+                pos += 1; // Skip opening quote
+                // Find closing quote
+                while *cmdline.add(pos) != 0 && *cmdline.add(pos) != b'"' as u16 {
+                    pos += 1;
+                }
+                // Store argument (skip quotes in length calculation)
+                argv_out[argc] = cmdline.add(arg_start + 1);
+                argv_len_out[argc] = pos - arg_start - 1;
+
+                if *cmdline.add(pos) == b'"' as u16 {
+                    pos += 1; // Skip closing quote
+                }
+            } else {
+                // Unquoted argument - find whitespace
+                while *cmdline.add(pos) != 0 && *cmdline.add(pos) != b' ' as u16 && *cmdline.add(pos) != b'\t' as u16 {
+                    pos += 1;
+                }
+                argv_out[argc] = cmdline.add(arg_start);
+                argv_len_out[argc] = pos - arg_start;
+            }
+
+            argc += 1;
+        }
+
+        argc
+    }
+}
 
 // String utilities
 fn print(s: &[u8]) {
@@ -680,12 +757,13 @@ fn is_template_placeholder(placeholder: &[u8]) -> bool {
 #[no_mangle]
 pub extern "C" fn main() -> ! {
     unsafe {
-        // Get command line for executable path extraction only
+        // Get command line
         let cmdline = GetCommandLineW();
 
-        // Runtime arguments are not supported to avoid shell32.dll dependency
-        // The stub only uses embedded arguments
-        let runtime_args_count = 0usize;
+        // Parse runtime arguments using custom parser (no shell32.dll needed)
+        let mut runtime_argv: [*const u16; 128] = [core::ptr::null(); 128];
+        let mut runtime_argv_len: [usize; 128] = [0; 128];
+        let runtime_args_count = parse_command_line(cmdline, &mut runtime_argv, &mut runtime_argv_len);
 
         // Check if ARGC is still a placeholder
         if is_template_placeholder(&ARGC_PLACEHOLDER) {
@@ -912,7 +990,43 @@ pub extern "C" fn main() -> ! {
             }
         }
 
-        // Runtime arguments are not supported (no shell32.dll dependency)
+        // Add runtime arguments (already UTF-16, just copy)
+        for i in 0..runtime_args_count {
+            let runtime_arg = runtime_argv[i];
+            let arg_len = runtime_argv_len[i];
+
+            // Check if we need quotes (scan for spaces)
+            let mut needs_quotes = false;
+            for j in 0..arg_len {
+                if *runtime_arg.add(j) == b' ' as u16 {
+                    needs_quotes = true;
+                    break;
+                }
+            }
+
+            if needs_quotes && cmdline_pos < cmdline_wide.len() {
+                cmdline_wide[cmdline_pos] = b'"' as u16;
+                cmdline_pos += 1;
+            }
+
+            // Copy wide string
+            let copy_len = arg_len.min(cmdline_wide.len() - cmdline_pos);
+            for j in 0..copy_len {
+                cmdline_wide[cmdline_pos + j] = *runtime_arg.add(j);
+            }
+            cmdline_pos += copy_len;
+
+            if needs_quotes && cmdline_pos < cmdline_wide.len() {
+                cmdline_wide[cmdline_pos] = b'"' as u16;
+                cmdline_pos += 1;
+            }
+
+            // Add space between arguments (except after last)
+            if i < runtime_args_count - 1 && cmdline_pos < cmdline_wide.len() {
+                cmdline_wide[cmdline_pos] = b' ' as u16;
+                cmdline_pos += 1;
+            }
+        }
 
         // Null-terminate command line
         if cmdline_pos < cmdline_wide.len() {
