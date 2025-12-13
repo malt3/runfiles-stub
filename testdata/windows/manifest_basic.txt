@@ -1,0 +1,3 @@
+_main/.runfile
+_repo_mapping C:/users/shadow/_bazel_shadow/julmaoj4/execroot/_main/bazel-out/x64_windows-fastbuild/bin/external/rules_img_tool+/cmd/img/img_/img.exe.repo_mapping
+rules_img_tool+/cmd/img/img_/img.exe C:/users/shadow/_bazel_shadow/julmaoj4/execroot/_main/bazel-out/x64_windows-fastbuild/bin/external/rules_img_tool+/cmd/img/img_/img.exe

@@ -1,0 +1,3 @@
+_main/.runfile
+_repo_mapping /home/user/.cache/bazel/_bazel_user/abc123/execroot/_main/bazel-out/k8-fastbuild/bin/myapp.repo_mapping
+_main/myapp /home/user/.cache/bazel/_bazel_user/abc123/execroot/_main/bazel-out/k8-fastbuild/bin/myapp

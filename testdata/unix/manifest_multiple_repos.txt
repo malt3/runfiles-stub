@@ -1,0 +1,7 @@
+_main/.runfile
+_repo_mapping /home/user/.cache/bazel/_bazel_user/abc123/execroot/_main/bazel-out/k8-fastbuild/bin/myapp.repo_mapping
+_main/myapp /home/user/.cache/bazel/_bazel_user/abc123/execroot/_main/bazel-out/k8-fastbuild/bin/myapp
+_main/data/config.json /home/user/.cache/bazel/_bazel_user/abc123/execroot/_main/bazel-out/k8-fastbuild/bin/data/config.json
+rules_go+/go/toolchain/bin/go /home/user/.cache/bazel/_bazel_user/abc123/external/rules_go+/go/toolchain/bin/go
+rules_python+/python/bin/python3 /home/user/.cache/bazel/_bazel_user/abc123/external/rules_python+/python/bin/python3
+protobuf+/protoc /home/user/.cache/bazel/_bazel_user/abc123/external/protobuf+/protoc

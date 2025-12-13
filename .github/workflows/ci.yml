@@ -44,21 +44,25 @@ jobs:
           EOF
 
       - name: Build template - x86_64 Linux
+        working-directory: runfiles-stub
         run: |
           cargo build --release --target x86_64-unknown-linux-gnu
-          cp target/x86_64-unknown-linux-gnu/release/runfiles-stub artifacts/runfiles-stub-x86_64-linux || mkdir -p artifacts && cp target/x86_64-unknown-linux-gnu/release/runfiles-stub artifacts/runfiles-stub-x86_64-linux
+          mkdir -p ../artifacts
+          cp target/x86_64-unknown-linux-gnu/release/runfiles-stub ../artifacts/runfiles-stub-x86_64-linux
 
       - name: Build template - aarch64 Linux
+        working-directory: runfiles-stub
         run: |
           cargo build --release --target aarch64-unknown-linux-gnu
-          mkdir -p artifacts
-          cp target/aarch64-unknown-linux-gnu/release/runfiles-stub artifacts/runfiles-stub-aarch64-linux
+          mkdir -p ../artifacts
+          cp target/aarch64-unknown-linux-gnu/release/runfiles-stub ../artifacts/runfiles-stub-aarch64-linux
 
       - name: Build template - x86_64 Windows
+        working-directory: runfiles-stub
         run: |
           cargo build --release --target x86_64-pc-windows-gnu
-          mkdir -p artifacts
-          cp target/x86_64-pc-windows-gnu/release/runfiles-stub.exe artifacts/runfiles-stub-x86_64-windows.exe
+          mkdir -p ../artifacts
+          cp target/x86_64-pc-windows-gnu/release/runfiles-stub.exe ../artifacts/runfiles-stub-x86_64-windows.exe
 
       - name: Build finalizer - x86_64 Linux (musl)
         working-directory: finalize-stub
@@ -108,15 +112,17 @@ jobs:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
       - name: Build template - x86_64 macOS
+        working-directory: runfiles-stub
         run: |
-          mkdir -p artifacts
+          mkdir -p ../artifacts
           cargo build --release --target x86_64-apple-darwin
-          cp target/x86_64-apple-darwin/release/runfiles-stub artifacts/runfiles-stub-x86_64-macos
+          cp target/x86_64-apple-darwin/release/runfiles-stub ../artifacts/runfiles-stub-x86_64-macos
 
       - name: Build template - aarch64 macOS (Apple Silicon)
+        working-directory: runfiles-stub
         run: |
           cargo build --release --target aarch64-apple-darwin
-          cp target/aarch64-apple-darwin/release/runfiles-stub artifacts/runfiles-stub-aarch64-macos
+          cp target/aarch64-apple-darwin/release/runfiles-stub ../artifacts/runfiles-stub-aarch64-macos
 
       - name: Build finalizer - x86_64 macOS
         working-directory: finalize-stub
@@ -1149,3 +1155,122 @@ jobs:
           echo "✓ SUCCESS: All platforms produce identical output!"
           echo "The finalizer is deterministic and platform-independent."
           echo "========================================="
+
+  # Integration tests using the Rust test suite
+  integration-test-linux:
+    name: Integration tests (Linux)
+    needs: merge-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: ./binaries
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Make binaries executable
+        run: |
+          chmod +x binaries/finalize-stub-x86_64-linux
+          chmod +x binaries/runfiles-stub-x86_64-linux
+
+      - name: Build test suite
+        working-directory: integration-tests
+        run: cargo build --release
+
+      - name: Run integration tests
+        run: |
+          ./integration-tests/target/release/test-runner \
+            --template binaries/runfiles-stub-x86_64-linux \
+            --finalizer binaries/finalize-stub-x86_64-linux \
+            --test-binaries integration-tests/target/release \
+            --work-dir /tmp/runfiles-stub-tests
+
+  integration-test-macos:
+    name: Integration tests (macOS)
+    needs: merge-artifacts
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: ./binaries
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Detect architecture
+        id: arch
+        run: |
+          ARCH=$(uname -m)
+          echo "arch=$ARCH" >> $GITHUB_OUTPUT
+          echo "Detected architecture: $ARCH"
+
+      - name: Make binaries executable
+        run: |
+          if [ "${{ steps.arch.outputs.arch }}" = "arm64" ]; then
+            chmod +x binaries/finalize-stub-aarch64-macos
+            chmod +x binaries/runfiles-stub-aarch64-macos
+          else
+            chmod +x binaries/finalize-stub-x86_64-macos
+            chmod +x binaries/runfiles-stub-x86_64-macos
+          fi
+
+      - name: Build test suite
+        working-directory: integration-tests
+        run: cargo build --release
+
+      - name: Run integration tests
+        run: |
+          if [ "${{ steps.arch.outputs.arch }}" = "arm64" ]; then
+            TEMPLATE="binaries/runfiles-stub-aarch64-macos"
+            FINALIZER="binaries/finalize-stub-aarch64-macos"
+          else
+            TEMPLATE="binaries/runfiles-stub-x86_64-macos"
+            FINALIZER="binaries/finalize-stub-x86_64-macos"
+          fi
+
+          ./integration-tests/target/release/test-runner \
+            --template "$TEMPLATE" \
+            --finalizer "$FINALIZER" \
+            --test-binaries integration-tests/target/release \
+            --work-dir /tmp/runfiles-stub-tests
+
+  integration-test-windows:
+    name: Integration tests (Windows)
+    needs: merge-artifacts
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: ./binaries
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build test suite
+        working-directory: integration-tests
+        run: cargo build --release
+
+      - name: Run integration tests
+        shell: bash
+        run: |
+          ./integration-tests/target/release/test-runner.exe \
+            --template binaries/runfiles-stub-x86_64-windows.exe \
+            --finalizer binaries/finalize-stub-x86_64-windows.exe \
+            --test-binaries integration-tests/target/release \
+            --work-dir "$TEMP/runfiles-stub-tests"

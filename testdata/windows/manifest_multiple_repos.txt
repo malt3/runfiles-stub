@@ -1,0 +1,7 @@
+_main/.runfile
+_repo_mapping C:/users/shadow/_bazel_shadow/abc123/execroot/_main/bazel-out/x64_windows-fastbuild/bin/myapp.exe.repo_mapping
+_main/myapp.exe C:/users/shadow/_bazel_shadow/abc123/execroot/_main/bazel-out/x64_windows-fastbuild/bin/myapp.exe
+_main/data/config.json C:/users/shadow/_bazel_shadow/abc123/execroot/_main/bazel-out/x64_windows-fastbuild/bin/data/config.json
+rules_go+/go/toolchain/bin/go.exe C:/users/shadow/_bazel_shadow/abc123/external/rules_go+/go/toolchain/bin/go.exe
+rules_python+/python/bin/python.exe C:/users/shadow/_bazel_shadow/abc123/external/rules_python+/python/bin/python.exe
+protobuf+/protoc.exe C:/users/shadow/_bazel_shadow/abc123/external/protobuf+/protoc.exe

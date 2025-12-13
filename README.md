@@ -255,6 +255,7 @@ finalize-stub --template template --export-runfiles-env=false --output stub -- t
 
 ```bash
 # Linux templates
+cd runfiles-stub
 cargo build --release --target x86_64-unknown-linux-gnu
 cargo build --release --target aarch64-unknown-linux-gnu
 
@@ -266,7 +267,7 @@ cargo build --release --target aarch64-apple-darwin
 cargo build --release --target x86_64-pc-windows-gnu
 
 # Finalizers
-cd finalize-stub
+cd ../finalize-stub
 cargo build --release --target x86_64-unknown-linux-musl
 cargo build --release --target aarch64-unknown-linux-musl
 cargo build --release --target x86_64-apple-darwin
@@ -275,6 +276,22 @@ cargo build --release --target x86_64-pc-windows-gnu
 ```
 
 See `.github/workflows/release.yml` for the complete build matrix.
+
+### Running Integration Tests
+
+The `integration-tests/` directory contains a comprehensive test suite:
+
+```bash
+# Build the test binaries
+cd integration-tests
+cargo build --release
+
+# Run tests (requires template and finalizer binaries)
+./target/release/test-runner \
+  --template ../runfiles-stub/target/release/runfiles-stub \
+  --finalizer ../finalize-stub/target/release/finalize-stub \
+  --test-binaries ./target/release
+```
 
 ## Architecture Details
 

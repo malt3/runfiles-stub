@@ -43,20 +43,23 @@ jobs:
           EOF
 
       - name: Build template - x86_64 Linux
+        working-directory: runfiles-stub
         run: |
           cargo build --release --target x86_64-unknown-linux-gnu
-          mkdir -p release
-          cp target/x86_64-unknown-linux-gnu/release/runfiles-stub release/runfiles-stub-x86_64-linux
+          mkdir -p ../release
+          cp target/x86_64-unknown-linux-gnu/release/runfiles-stub ../release/runfiles-stub-x86_64-linux
 
       - name: Build template - aarch64 Linux
+        working-directory: runfiles-stub
         run: |
           cargo build --release --target aarch64-unknown-linux-gnu
-          cp target/aarch64-unknown-linux-gnu/release/runfiles-stub release/runfiles-stub-aarch64-linux
+          cp target/aarch64-unknown-linux-gnu/release/runfiles-stub ../release/runfiles-stub-aarch64-linux
 
       - name: Build template - x86_64 Windows
+        working-directory: runfiles-stub
         run: |
           cargo build --release --target x86_64-pc-windows-gnu
-          cp target/x86_64-pc-windows-gnu/release/runfiles-stub.exe release/runfiles-stub-x86_64-windows.exe
+          cp target/x86_64-pc-windows-gnu/release/runfiles-stub.exe ../release/runfiles-stub-x86_64-windows.exe
 
       - name: Build finalizer - x86_64 Linux (musl)
         working-directory: finalize-stub
@@ -104,15 +107,17 @@ jobs:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
       - name: Build template - x86_64 macOS
+        working-directory: runfiles-stub
         run: |
-          mkdir -p release
+          mkdir -p ../release
           cargo build --release --target x86_64-apple-darwin
-          cp target/x86_64-apple-darwin/release/runfiles-stub release/runfiles-stub-x86_64-macos
+          cp target/x86_64-apple-darwin/release/runfiles-stub ../release/runfiles-stub-x86_64-macos
 
       - name: Build template - aarch64 macOS (Apple Silicon)
+        working-directory: runfiles-stub
         run: |
           cargo build --release --target aarch64-apple-darwin
-          cp target/aarch64-apple-darwin/release/runfiles-stub release/runfiles-stub-aarch64-macos
+          cp target/aarch64-apple-darwin/release/runfiles-stub ../release/runfiles-stub-aarch64-macos
 
       - name: Build finalizer - x86_64 macOS
         working-directory: finalize-stub

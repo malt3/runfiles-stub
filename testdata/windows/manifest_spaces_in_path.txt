@@ -1,0 +1,4 @@
+_main/.runfile
+_repo_mapping C:/Users/John Doe/_bazel_john doe/xyz789/execroot/_main/bazel-out/x64_windows-fastbuild/bin/my tool.exe.repo_mapping
+_main/my tool.exe C:/Users/John Doe/_bazel_john doe/xyz789/execroot/_main/bazel-out/x64_windows-fastbuild/bin/my tool.exe
+_main/data/test file.txt C:/Users/John Doe/_bazel_john doe/xyz789/execroot/_main/data/test file.txt

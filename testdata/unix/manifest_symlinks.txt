@@ -1,0 +1,5 @@
+_main/.runfile
+_repo_mapping /home/user/.cache/bazel/_bazel_user/xyz789/execroot/_main/bazel-out/k8-opt/bin/server.repo_mapping
+_main/server /home/user/.cache/bazel/_bazel_user/xyz789/execroot/_main/bazel-out/k8-opt/bin/server
+_main/server.runfiles/_main/lib/libssl.so.3 /usr/lib/x86_64-linux-gnu/libssl.so.3
+_main/server.runfiles/_main/lib/libcrypto.so.3 /usr/lib/x86_64-linux-gnu/libcrypto.so.3

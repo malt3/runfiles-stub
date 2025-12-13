@@ -1,10 +1,12 @@
 # Rust build artifacts
-/target/
+runfiles-stub/target/
 finalize-stub/target/
+integration-tests/target/
 
 # Cargo.lock for binary crates (libraries should track this)
-Cargo.lock
+runfiles-stub/Cargo.lock
 finalize-stub/Cargo.lock
+integration-tests/Cargo.lock
 
 # Cargo credentials (but keep config.toml)
 .cargo/credentials

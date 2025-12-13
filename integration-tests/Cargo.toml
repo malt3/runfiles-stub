@@ -1,0 +1,33 @@
+[package]
+name = "runfiles-stub-tests"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "test-runner"
+path = "src/main.rs"
+
+# Demo programs for testing
+[[bin]]
+name = "hash-file"
+path = "src/bin/hash_file.rs"
+
+[[bin]]
+name = "add-numbers"
+path = "src/bin/add_numbers.rs"
+
+[[bin]]
+name = "merge-json"
+path = "src/bin/merge_json.rs"
+
+[[bin]]
+name = "orchestrator"
+path = "src/bin/orchestrator.rs"
+
+[[bin]]
+name = "print-env"
+path = "src/bin/print_env.rs"
+
+[dependencies]
+sha2 = "0.10"
+serde_json = "1.0"
