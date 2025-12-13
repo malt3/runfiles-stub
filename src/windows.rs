@@ -249,71 +249,77 @@ fn get_env_var(name: &[u8], buf: &mut [u8]) -> Option<usize> {
     }
 }
 
-// Manifest entry storage
-const MAX_ENTRIES: usize = 1024;
-const MAX_PATH_LEN: usize = 256;
+// Manifest entry storage - use static buffers to avoid stack overflow
+// Windows has a default 1MB stack limit, so we store large data in .bss
+const MAX_ENTRIES: usize = 256;  // Reduced from 1024 to save memory
+const MAX_PATH_LEN: usize = 512; // Increased to support longer Windows paths
 
-struct ManifestEntry {
-    key: [u8; MAX_PATH_LEN],
-    key_len: usize,
-    value: [u8; MAX_PATH_LEN],
-    value_len: usize,
-}
+// Static storage for manifest data (in .bss segment, not stack)
+static mut MANIFEST_KEYS: [[u8; MAX_PATH_LEN]; MAX_ENTRIES] = [[0; MAX_PATH_LEN]; MAX_ENTRIES];
+static mut MANIFEST_VALUES: [[u8; MAX_PATH_LEN]; MAX_ENTRIES] = [[0; MAX_PATH_LEN]; MAX_ENTRIES];
+static mut MANIFEST_KEY_LENS: [usize; MAX_ENTRIES] = [0; MAX_ENTRIES];
+static mut MANIFEST_VALUE_LENS: [usize; MAX_ENTRIES] = [0; MAX_ENTRIES];
+static mut MANIFEST_COUNT: usize = 0;
+
+// Static storage for file buffer
+static mut FILE_BUF: [u8; 65536] = [0; 65536];
+
+// Static storage for resolved paths
+static mut RESOLVED_PATHS: [[u8; MAX_PATH_LEN]; 128] = [[0; MAX_PATH_LEN]; 128];
 
 struct Manifest {
-    entries: [ManifestEntry; MAX_ENTRIES],
-    count: usize,
+    // Empty struct - all data is in statics
 }
 
 impl Manifest {
-    fn new() -> Self {
-        const EMPTY_ENTRY: ManifestEntry = ManifestEntry {
-            key: [0; MAX_PATH_LEN],
-            key_len: 0,
-            value: [0; MAX_PATH_LEN],
-            value_len: 0,
-        };
-
-        Self {
-            entries: [EMPTY_ENTRY; MAX_ENTRIES],
-            count: 0,
+    fn reset() {
+        unsafe {
+            MANIFEST_COUNT = 0;
+            // No need to zero the arrays - we track lengths
         }
     }
 
-    fn add_entry(&mut self, key: &[u8], value: &[u8]) {
-        if self.count >= MAX_ENTRIES {
-            return;
-        }
-
-        let entry = &mut self.entries[self.count];
-        let key_len = key.len().min(MAX_PATH_LEN);
-        let value_len = value.len().min(MAX_PATH_LEN);
-
-        entry.key[..key_len].copy_from_slice(&key[..key_len]);
-        entry.key_len = key_len;
-        entry.value[..value_len].copy_from_slice(&value[..value_len]);
-        entry.value_len = value_len;
-
-        self.count += 1;
-    }
-
-    fn lookup(&self, key: &[u8]) -> Option<&[u8]> {
-        for i in 0..self.count {
-            let entry = &self.entries[i];
-            if str_eq(&entry.key[..entry.key_len], key) {
-                return Some(&entry.value[..entry.value_len]);
+    fn add_entry(key: &[u8], value: &[u8]) {
+        unsafe {
+            if MANIFEST_COUNT >= MAX_ENTRIES {
+                return;
             }
+
+            let idx = MANIFEST_COUNT;
+            let key_len = key.len().min(MAX_PATH_LEN);
+            let value_len = value.len().min(MAX_PATH_LEN);
+
+            MANIFEST_KEYS[idx][..key_len].copy_from_slice(&key[..key_len]);
+            MANIFEST_KEY_LENS[idx] = key_len;
+            MANIFEST_VALUES[idx][..value_len].copy_from_slice(&value[..value_len]);
+            MANIFEST_VALUE_LENS[idx] = value_len;
+
+            MANIFEST_COUNT += 1;
         }
-        None
+    }
+
+    fn lookup(key: &[u8]) -> Option<&'static [u8]> {
+        unsafe {
+            for i in 0..MANIFEST_COUNT {
+                let entry_key = &MANIFEST_KEYS[i][..MANIFEST_KEY_LENS[i]];
+                if str_eq(entry_key, key) {
+                    return Some(&MANIFEST_VALUES[i][..MANIFEST_VALUE_LENS[i]]);
+                }
+            }
+            None
+        }
     }
 }
 
-// Load manifest file
+// Load manifest file - uses static FILE_BUF to avoid stack overflow
 fn load_manifest(path: &[u8]) -> Option<Manifest> {
     unsafe {
+        // Reset manifest state
+        Manifest::reset();
+
         // Ensure path is null-terminated
-        let mut path_with_null = [0u8; MAX_PATH_LEN + 1];
-        let path_len = path.len().min(MAX_PATH_LEN);
+        let mut path_with_null = [0u8; 1024];
+        let path_len = path.len().min(1023);
         path_with_null[..path_len].copy_from_slice(&path[..path_len]);
         path_with_null[path_len] = 0;
 
@@ -331,12 +337,12 @@ fn load_manifest(path: &[u8]) -> Option<Manifest> {
             return None;
         }
 
-        let mut file_buf = [0u8; 65536];
+        // Use static FILE_BUF instead of stack allocation
         let mut bytes_read: DWORD = 0;
         let success = ReadFile(
             handle,
-            file_buf.as_mut_ptr() as LPVOID,
-            file_buf.len() as DWORD,
+            FILE_BUF.as_mut_ptr() as LPVOID,
+            FILE_BUF.len() as DWORD,
             &mut bytes_read,
             core::ptr::null_mut(),
         );
@@ -346,8 +352,7 @@ fn load_manifest(path: &[u8]) -> Option<Manifest> {
             return None;
         }
 
-        let mut manifest = Manifest::new();
-        let data = &file_buf[..bytes_read as usize];
+        let data = &FILE_BUF[..bytes_read as usize];
         let mut pos = 0;
 
         while pos < data.len() {
@@ -363,17 +368,17 @@ fn load_manifest(path: &[u8]) -> Option<Manifest> {
                 let mut value = &line[space_pos + 1..];
 
                 // Strip trailing \r if present (Windows line endings)
-                if value.len() > 0 && value[value.len() - 1] == b'\r' {
+                if !value.is_empty() && value[value.len() - 1] == b'\r' {
                     value = &value[..value.len() - 1];
                 }
 
-                manifest.add_entry(key, value);
+                Manifest::add_entry(key, value);
             }
 
             pos += 1;
         }
 
-        Some(manifest)
+        Some(Manifest {})
     }
 }
 
@@ -461,45 +466,51 @@ impl Runfiles {
         None
     }
 
-    fn rlocation(&self, path: &[u8]) -> Option<[u8; MAX_PATH_LEN]> {
+    fn rlocation(&self, path: &[u8], result_idx: usize) -> Option<&'static [u8]> {
         // If path is absolute (Windows: starts with drive letter or \\), don't resolve
         if path.len() >= 2 && ((path[0].is_ascii_alphabetic() && path[1] == b':') || (path[0] == b'\\' && path[1] == b'\\')) {
             return None;
         }
 
         match &self.mode {
-            RunfilesMode::ManifestBased(manifest) => {
-                if let Some(resolved) = manifest.lookup(path) {
-                    let mut result = [0u8; MAX_PATH_LEN];
-                    let len = resolved.len().min(MAX_PATH_LEN);
-                    result[..len].copy_from_slice(&resolved[..len]);
-                    return Some(result);
+            RunfilesMode::ManifestBased(_manifest) => {
+                // Use static lookup
+                if let Some(resolved) = Manifest::lookup(path) {
+                    unsafe {
+                        let len = resolved.len().min(MAX_PATH_LEN);
+                        RESOLVED_PATHS[result_idx][..len].copy_from_slice(&resolved[..len]);
+                        RESOLVED_PATHS[result_idx][len] = 0; // null terminate
+                        return Some(&RESOLVED_PATHS[result_idx][..len]);
+                    }
                 }
                 None
             }
             RunfilesMode::DirectoryBased(dir, dir_len) => {
-                let mut result = [0u8; MAX_PATH_LEN];
-                let mut pos = 0;
+                unsafe {
+                    let mut pos = 0;
 
-                // Copy directory
-                let copy_len = (*dir_len).min(MAX_PATH_LEN);
-                result[..copy_len].copy_from_slice(&dir[..copy_len]);
-                pos += copy_len;
+                    // Copy directory
+                    let copy_len = (*dir_len).min(MAX_PATH_LEN);
+                    RESOLVED_PATHS[result_idx][..copy_len].copy_from_slice(&dir[..copy_len]);
+                    pos += copy_len;
 
-                // Add separator if needed
-                if pos < MAX_PATH_LEN && pos > 0 && result[pos - 1] != b'\\' && result[pos - 1] != b'/' {
-                    result[pos] = b'\\';
-                    pos += 1;
+                    // Add separator if needed
+                    if pos < MAX_PATH_LEN && pos > 0 && RESOLVED_PATHS[result_idx][pos - 1] != b'\\' && RESOLVED_PATHS[result_idx][pos - 1] != b'/' {
+                        RESOLVED_PATHS[result_idx][pos] = b'\\';
+                        pos += 1;
+                    }
+
+                    // Copy path, converting forward slashes to backslashes
+                    // Input is always Unix-style (a/b/c), output should be Windows-style (a\b\c)
+                    let path_len = path.len().min(MAX_PATH_LEN - pos);
+                    for i in 0..path_len {
+                        RESOLVED_PATHS[result_idx][pos + i] = if path[i] == b'/' { b'\\' } else { path[i] };
+                    }
+                    let total_len = pos + path_len;
+                    RESOLVED_PATHS[result_idx][total_len] = 0; // null terminate
+
+                    Some(&RESOLVED_PATHS[result_idx][..total_len])
                 }
-
-                // Copy path, converting forward slashes to backslashes
-                // Input is always Unix-style (a/b/c), output should be Windows-style (a\b\c)
-                let path_len = path.len().min(MAX_PATH_LEN - pos);
-                for i in 0..path_len {
-                    result[pos + i] = if path[i] == b'/' { b'\\' } else { path[i] };
-                }
-
-                Some(result)
             }
         }
     }
@@ -911,11 +922,7 @@ pub extern "C" fn main() -> ! {
             &ARG9_PLACEHOLDER,
         ];
 
-        // Storage for resolved paths (embedded args + runtime args)
-        let mut resolved_paths: [[u8; MAX_PATH_LEN]; 128] = [[0; MAX_PATH_LEN]; 128];
-        let mut total_argc = 0usize;
-
-        // Resolve embedded arguments
+        // Resolve embedded arguments - uses static RESOLVED_PATHS
         for i in 0..argc {
             let arg_data = arg_placeholders[i];
             let arg_len = strlen(arg_data);
@@ -936,25 +943,26 @@ pub extern "C" fn main() -> ! {
             if should_transform {
                 // Try to resolve through runfiles
                 if let Some(ref rf) = runfiles {
-                    if let Some(resolved) = rf.rlocation(arg_slice) {
-                        resolved_paths[i] = resolved;
-                    } else {
+                    if rf.rlocation(arg_slice, i).is_none() {
                         // If not found in runfiles, use the path as-is
                         let copy_len = arg_len.min(MAX_PATH_LEN);
-                        resolved_paths[i][..copy_len].copy_from_slice(&arg_slice[..copy_len]);
+                        RESOLVED_PATHS[i][..copy_len].copy_from_slice(&arg_slice[..copy_len]);
+                        RESOLVED_PATHS[i][copy_len] = 0;
                     }
+                    // else: rlocation already wrote to RESOLVED_PATHS[i]
                 } else {
                     // Use path as-is
                     let copy_len = arg_len.min(MAX_PATH_LEN);
-                    resolved_paths[i][..copy_len].copy_from_slice(&arg_slice[..copy_len]);
+                    RESOLVED_PATHS[i][..copy_len].copy_from_slice(&arg_slice[..copy_len]);
+                    RESOLVED_PATHS[i][copy_len] = 0;
                 }
             } else {
                 // Use path as-is without transformation
                 let copy_len = arg_len.min(MAX_PATH_LEN);
-                resolved_paths[i][..copy_len].copy_from_slice(&arg_slice[..copy_len]);
+                RESOLVED_PATHS[i][..copy_len].copy_from_slice(&arg_slice[..copy_len]);
+                RESOLVED_PATHS[i][copy_len] = 0;
             }
         }
-        total_argc = argc;
 
         // Build command line for CreateProcessW (UTF-16)
         // Command line includes embedded args + runtime args
@@ -963,8 +971,8 @@ pub extern "C" fn main() -> ! {
 
         // Add embedded arguments (convert from UTF-8 to UTF-16)
         for i in 0..argc {
-            let arg_len = strlen(&resolved_paths[i]);
-            let arg_slice = &resolved_paths[i][..arg_len];
+            let arg_len = strlen(&RESOLVED_PATHS[i]);
+            let arg_slice = &RESOLVED_PATHS[i][..arg_len];
 
             // Check if we need quotes (if path contains spaces)
             let needs_quotes = find_byte(arg_slice, b' ').is_some();
