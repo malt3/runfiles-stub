@@ -478,7 +478,11 @@ impl Runfiles {
                 if let Some(resolved) = Manifest::lookup(path) {
                     unsafe {
                         let len = resolved.len().min(MAX_PATH_LEN);
-                        RESOLVED_PATHS[result_idx][..len].copy_from_slice(&resolved[..len]);
+                        // Copy path, converting forward slashes to backslashes
+                        // Manifest values may contain Unix-style paths (forward slashes)
+                        for i in 0..len {
+                            RESOLVED_PATHS[result_idx][i] = if resolved[i] == b'/' { b'\\' } else { resolved[i] };
+                        }
                         RESOLVED_PATHS[result_idx][len] = 0; // null terminate
                         return Some(&RESOLVED_PATHS[result_idx][..len]);
                     }
