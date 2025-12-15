@@ -508,12 +508,18 @@ fn test_orchestrator_env_propagation(config: &TestConfig) -> Result<(), String> 
     let (stdout, stderr, exit_code) = run_stub(&env_stub_path, &runfiles, &[], true)?;
 
     if exit_code != 0 {
-        return Err(format!("Env check failed with exit code {}: {}", exit_code, stderr));
+        return Err(format!(
+            "Env check failed with exit code {}\nStdout: {}\nStderr: {}",
+            exit_code, stdout, stderr
+        ));
     }
 
     // Verify environment variables are propagated
     if !stdout.contains("RUNFILES_MANIFEST_FILE=") || stdout.contains("RUNFILES_MANIFEST_FILE=<unset>") {
-        return Err(format!("RUNFILES_MANIFEST_FILE not propagated: {}", stdout));
+        return Err(format!(
+            "RUNFILES_MANIFEST_FILE not propagated correctly\nFull stdout:\n{}\nStderr:\n{}",
+            stdout, stderr
+        ));
     }
 
     println!("    PASS (env propagation)");
@@ -542,11 +548,17 @@ fn test_orchestrator_env_propagation(config: &TestConfig) -> Result<(), String> 
     let (stdout, stderr, exit_code) = run_stub(&hash_stub_path, &runfiles, &[], true)?;
 
     if exit_code != 0 {
-        return Err(format!("Hash-and-report failed with exit code {}: {}", exit_code, stderr));
+        return Err(format!(
+            "Hash-and-report failed with exit code {}\nStdout: {}\nStderr: {}",
+            exit_code, stdout, stderr
+        ));
     }
 
     if !stdout.contains("ORCHESTRATOR:HASH_RESULT:SHA256:") {
-        return Err(format!("Unexpected hash-and-report output: {}", stdout));
+        return Err(format!(
+            "Unexpected hash-and-report output (missing ORCHESTRATOR:HASH_RESULT:SHA256:)\nStdout:\n{}\nStderr:\n{}",
+            stdout, stderr
+        ));
     }
 
     println!("    PASS (hash-and-report)");

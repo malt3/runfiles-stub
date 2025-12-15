@@ -521,7 +521,8 @@ impl Runfiles {
 }
 
 // Environment building for export mode
-const MAX_ENV_SIZE: usize = 16384;
+// Windows environments can be large (32KB+), use 128KB to be safe
+const MAX_ENV_SIZE: usize = 131072;
 const MAX_ENV_VARS: usize = 256;
 
 // External Windows API function for environment access
@@ -534,108 +535,85 @@ static mut MODIFIED_ENV_DATA: [u16; MAX_ENV_SIZE / 2] = [0; MAX_ENV_SIZE / 2];
 
 fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void {
     unsafe {
+        // Windows requires environment variables to be sorted alphabetically
+        // GetEnvironmentStringsW() already returns sorted environment
+        // We need to maintain sorted order when adding our variables
+
         let mut data_pos = 0usize;
 
-        // Helper to add an environment variable (converts UTF-8 to UTF-16)
-        let mut add_env_var = |key: &[u8], value: &[u8]| {
-            let total_len = key.len() + 1 + value.len() + 1; // "KEY=VALUE\0" in UTF-16
-            if data_pos + total_len > MODIFIED_ENV_DATA.len() {
-                return false;
-            }
-
-            // Copy key (UTF-8 to UTF-16, simple ASCII conversion)
-            for &byte in key {
-                MODIFIED_ENV_DATA[data_pos] = byte as u16;
-                data_pos += 1;
-            }
-
-            // Add '='
-            MODIFIED_ENV_DATA[data_pos] = b'=' as u16;
-            data_pos += 1;
-
-            // Copy value
-            for &byte in value {
-                MODIFIED_ENV_DATA[data_pos] = byte as u16;
-                data_pos += 1;
-            }
-
-            // Null terminate
-            MODIFIED_ENV_DATA[data_pos] = 0;
-            data_pos += 1;
-
-            true
-        };
-
-        // Add RUNFILES_MANIFEST_FILE if we have it
-        if let Some(rf) = runfiles {
-            if let Some((ref path, len)) = rf.manifest_path {
-                add_env_var(b"RUNFILES_MANIFEST_FILE", &path[..len]);
-            }
-        }
-
-        // Add RUNFILES_DIR if we have it
-        if let Some(rf) = runfiles {
-            if let Some((ref path, len)) = rf.dir_path {
-                add_env_var(b"RUNFILES_DIR", &path[..len]);
-                add_env_var(b"JAVA_RUNFILES", &path[..len]);
-            }
-        }
-
-        // Copy existing environment, filtering out runfiles vars
+        // Copy existing environment and insert runfiles vars in correct sorted position
         let env_block = GetEnvironmentStringsW();
-        if !env_block.is_null() {
-            let mut pos = 0;
+        if env_block.is_null() {
+            // No parent environment, just add runfiles vars in sorted order
+            let mut add_env = |key: &[u8], value: &[u8]| {
+                for &b in key {
+                    MODIFIED_ENV_DATA[data_pos] = b as u16;
+                    data_pos += 1;
+                }
+                MODIFIED_ENV_DATA[data_pos] = b'=' as u16;
+                data_pos += 1;
+                for &b in value {
+                    MODIFIED_ENV_DATA[data_pos] = b as u16;
+                    data_pos += 1;
+                }
+                MODIFIED_ENV_DATA[data_pos] = 0;
+                data_pos += 1;
+            };
 
-            // Environment block is a series of null-terminated UTF-16 strings
+            if let Some(rf) = runfiles {
+                if let Some((ref path, len)) = rf.dir_path {
+                    add_env(b"JAVA_RUNFILES", &path[..len]);
+                    add_env(b"RUNFILES_DIR", &path[..len]);
+                }
+                if let Some((ref path, len)) = rf.manifest_path {
+                    add_env(b"RUNFILES_MANIFEST_FILE", &path[..len]);
+                }
+            }
+        } else {
+            // Iterate through existing environment and insert runfiles vars at correct position
+            let mut pos = 0;
+            let mut java_runfiles_inserted = false;
+            let mut runfiles_dir_inserted = false;
+            let mut runfiles_manifest_inserted = false;
+
             loop {
-                // Find the next null terminator
                 let entry_start = pos;
                 while *env_block.add(pos) != 0 {
                     pos += 1;
-                    if pos > 16384 {  // Safety limit
-                        break;
-                    }
+                    if pos > 65536 { break; } // safety: MAX_ENV_SIZE / 2
                 }
 
                 let entry_len = pos - entry_start;
-                if entry_len == 0 {
-                    // Empty string marks end of environment block
-                    break;
-                }
+                if entry_len == 0 { break; }
 
-                // Check if this is a runfiles variable we should skip (compare in UTF-16)
                 let entry_ptr = env_block.add(entry_start);
+
+                // Check if we should skip existing runfiles vars
                 let should_skip =
-                    // Check for RUNFILES_MANIFEST_FILE=
                     (entry_len > 23 && {
-                        let prefix = b"RUNFILES_MANIFEST_FILE=";
                         let mut matches = true;
                         for i in 0..23 {
-                            if *entry_ptr.add(i) != prefix[i] as u16 {
+                            if *entry_ptr.add(i) != b"RUNFILES_MANIFEST_FILE="[i] as u16 {
                                 matches = false;
                                 break;
                             }
                         }
                         matches
                     }) ||
-                    // Check for RUNFILES_DIR=
                     (entry_len > 13 && {
-                        let prefix = b"RUNFILES_DIR=";
                         let mut matches = true;
                         for i in 0..13 {
-                            if *entry_ptr.add(i) != prefix[i] as u16 {
+                            if *entry_ptr.add(i) != b"RUNFILES_DIR="[i] as u16 {
                                 matches = false;
                                 break;
                             }
                         }
                         matches
                     }) ||
-                    // Check for JAVA_RUNFILES=
                     (entry_len > 14 && {
-                        let prefix = b"JAVA_RUNFILES=";
                         let mut matches = true;
                         for i in 0..14 {
-                            if *entry_ptr.add(i) != prefix[i] as u16 {
+                            if *entry_ptr.add(i) != b"JAVA_RUNFILES="[i] as u16 {
                                 matches = false;
                                 break;
                             }
@@ -644,6 +622,88 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void
                     });
 
                 if !should_skip {
+                    // Helper to compare var name with a target name (case-insensitive, stops at '=')
+                    let var_comes_after = |target: &[u8]| -> bool {
+                        for i in 0..target.len().min(entry_len) {
+                            let entry_char = *entry_ptr.add(i);
+                            let target_char = target[i] as u16;
+
+                            // Convert both to uppercase for case-insensitive comparison
+                            let entry_upper = if entry_char >= b'a' as u16 && entry_char <= b'z' as u16 {
+                                entry_char - 32
+                            } else {
+                                entry_char
+                            };
+                            let target_upper = if target_char >= b'a' as u16 && target_char <= b'z' as u16 {
+                                target_char - 32
+                            } else {
+                                target_char
+                            };
+
+                            if entry_upper != target_upper {
+                                return entry_upper > target_upper;
+                            }
+                        }
+                        entry_len > target.len()
+                    };
+
+                    // Insert JAVA_RUNFILES if needed
+                    if !java_runfiles_inserted && var_comes_after(b"JAVA_RUNFILES") {
+                        if let Some(rf) = runfiles {
+                            if let Some((ref path, len)) = rf.dir_path {
+                                for &b in b"JAVA_RUNFILES=" {
+                                    MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                    data_pos += 1;
+                                }
+                                for i in 0..len {
+                                    MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                                    data_pos += 1;
+                                }
+                                MODIFIED_ENV_DATA[data_pos] = 0;
+                                data_pos += 1;
+                            }
+                        }
+                        java_runfiles_inserted = true;
+                    }
+
+                    // Insert RUNFILES_DIR if needed
+                    if !runfiles_dir_inserted && var_comes_after(b"RUNFILES_DIR") {
+                        if let Some(rf) = runfiles {
+                            if let Some((ref path, len)) = rf.dir_path {
+                                for &b in b"RUNFILES_DIR=" {
+                                    MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                    data_pos += 1;
+                                }
+                                for i in 0..len {
+                                    MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                                    data_pos += 1;
+                                }
+                                MODIFIED_ENV_DATA[data_pos] = 0;
+                                data_pos += 1;
+                            }
+                        }
+                        runfiles_dir_inserted = true;
+                    }
+
+                    // Insert RUNFILES_MANIFEST_FILE if needed
+                    if !runfiles_manifest_inserted && var_comes_after(b"RUNFILES_MANIFEST_FILE") {
+                        if let Some(rf) = runfiles {
+                            if let Some((ref path, len)) = rf.manifest_path {
+                                for &b in b"RUNFILES_MANIFEST_FILE=" {
+                                    MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                    data_pos += 1;
+                                }
+                                for i in 0..len {
+                                    MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                                    data_pos += 1;
+                                }
+                                MODIFIED_ENV_DATA[data_pos] = 0;
+                                data_pos += 1;
+                            }
+                        }
+                        runfiles_manifest_inserted = true;
+                    }
+
                     // Copy this environment variable
                     if data_pos + entry_len + 1 <= MODIFIED_ENV_DATA.len() {
                         for i in 0..entry_len {
@@ -654,13 +714,67 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void
                     }
                 }
 
-                pos += 1; // Skip past the null terminator
+                pos += 1;
+            }
+
+            // Add any remaining runfiles vars that weren't inserted yet
+            if !java_runfiles_inserted {
+                if let Some(rf) = runfiles {
+                    if let Some((ref path, len)) = rf.dir_path {
+                        for &b in b"JAVA_RUNFILES=" {
+                            MODIFIED_ENV_DATA[data_pos] = b as u16;
+                            data_pos += 1;
+                        }
+                        for i in 0..len {
+                            MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                            data_pos += 1;
+                        }
+                        MODIFIED_ENV_DATA[data_pos] = 0;
+                        data_pos += 1;
+                    }
+                }
+            }
+            if !runfiles_dir_inserted {
+                if let Some(rf) = runfiles {
+                    if let Some((ref path, len)) = rf.dir_path {
+                        for &b in b"RUNFILES_DIR=" {
+                            MODIFIED_ENV_DATA[data_pos] = b as u16;
+                            data_pos += 1;
+                        }
+                        for i in 0..len {
+                            MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                            data_pos += 1;
+                        }
+                        MODIFIED_ENV_DATA[data_pos] = 0;
+                        data_pos += 1;
+                    }
+                }
+            }
+            if !runfiles_manifest_inserted {
+                if let Some(rf) = runfiles {
+                    if let Some((ref path, len)) = rf.manifest_path {
+                        for &b in b"RUNFILES_MANIFEST_FILE=" {
+                            MODIFIED_ENV_DATA[data_pos] = b as u16;
+                            data_pos += 1;
+                        }
+                        for i in 0..len {
+                            MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                            data_pos += 1;
+                        }
+                        MODIFIED_ENV_DATA[data_pos] = 0;
+                        data_pos += 1;
+                    }
+                }
             }
 
             FreeEnvironmentStringsW(env_block);
         }
 
-        // Add final null terminator to mark end of environment block
+        // Add double null terminator to mark end of environment block
+        if data_pos < MODIFIED_ENV_DATA.len() {
+            MODIFIED_ENV_DATA[data_pos] = 0;
+            data_pos += 1;
+        }
         if data_pos < MODIFIED_ENV_DATA.len() {
             MODIFIED_ENV_DATA[data_pos] = 0;
         }
@@ -978,8 +1092,9 @@ pub extern "C" fn main() -> ! {
             let arg_len = strlen(&RESOLVED_PATHS[i]);
             let arg_slice = &RESOLVED_PATHS[i][..arg_len];
 
-            // Check if we need quotes (if path contains spaces)
-            let needs_quotes = find_byte(arg_slice, b' ').is_some();
+            // Always quote the first argument (executable path) following Bazel's approach
+            // For other arguments, only quote if they contain spaces
+            let needs_quotes = i == 0 || find_byte(arg_slice, b' ').is_some();
 
             if needs_quotes && cmdline_pos < cmdline_wide.len() {
                 cmdline_wide[cmdline_pos] = b'"' as u16;
@@ -1065,11 +1180,11 @@ pub extern "C" fn main() -> ! {
             0
         };
 
-        // Pass NULL for lpApplicationName and put everything in lpCommandLine
-        // This is the recommended approach for CreateProcessW
+        // Use NULL for lpApplicationName and quote the executable in the command line
+        // This follows Bazel's launcher.cc approach
         let success = CreateProcessW(
-            core::ptr::null(),          // Application name (NULL - use command line)
-            cmdline_wide.as_mut_ptr(),  // Command line (UTF-16) - includes argv[0]
+            core::ptr::null(),          // Application name (NULL - parsed from command line)
+            cmdline_wide.as_mut_ptr(),  // Command line (UTF-16) - quoted executable + args
             core::ptr::null_mut(),      // Process attributes
             core::ptr::null_mut(),      // Thread attributes
             1,                          // Inherit handles
