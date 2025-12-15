@@ -1,0 +1,32 @@
+# Cut a release whenever a new tag is pushed to the repo.
+name: Release
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g., v0.2.1)'
+        required: true
+        type: string
+permissions:
+  id-token: write
+  attestations: write
+  contents: write
+jobs:
+  release:
+    uses: bazel-contrib/.github/.github/workflows/release_ruleset.yaml@v7.2.3
+    with:
+      release_files: |
+        dist/hermetic_launcher-*.tar.gz
+      tag_name: ${{ inputs.tag_name || github.ref_name }}
+    secrets:
+      inherit
+  publish:
+    needs: release
+    uses: ./.github/workflows/publish.yaml
+    with:
+      tag_name: ${{ inputs.tag_name || github.ref_name }}
+    secrets:
+      publish_token: ${{ secrets.publish_token || secrets.BCR_PUBLISH_TOKEN }}

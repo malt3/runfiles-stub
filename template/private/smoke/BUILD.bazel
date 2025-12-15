@@ -1,0 +1,13 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@hermetic_launcher//template:template_binary.bzl", "template_binary")
+
+template_binary(
+    name = "buildozer_version_command",
+    entrypoint = "@buildozer",
+    embedded_args = ["version"],
+)
+
+build_test(
+    name = "test",
+    targets = [":buildozer_version_command"],
+)

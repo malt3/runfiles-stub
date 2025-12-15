@@ -2,6 +2,7 @@
 runfiles-stub/target/
 finalize-stub/target/
 integration-tests/target/
+tools/create-release-archive/target/
 
 # Cargo.lock for binary crates (libraries should track this)
 runfiles-stub/Cargo.lock
@@ -22,3 +23,7 @@ integration-tests/Cargo.lock
 # OS files
 .DS_Store
 Thumbs.db
+
+# Bazel output directories
+bazel-*
+dist
