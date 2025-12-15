@@ -677,6 +677,78 @@ fn test_fallback_runfiles_dir(config: &TestConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// Test: Fallback runfiles_manifest file discovery
+fn test_fallback_runfiles_manifest(config: &TestConfig) -> Result<(), String> {
+    println!("  Running test: fallback_runfiles_manifest");
+
+    let test_dir = config.work_dir.join("test_fallback_manifest");
+    fs::create_dir_all(&test_dir).map_err(|e| format!("Failed to create test dir: {}", e))?;
+
+    // Create a stub with a .runfiles_manifest file next to it (not a directory)
+    let stub_path = test_dir.join(format!("manifest_stub{}", EXE_EXT));
+    let manifest_path = test_dir.join(format!("manifest_stub{}.runfiles_manifest", EXE_EXT));
+
+    // Create the runfiles directory structure for the files
+    let runfiles_dir = test_dir.join(format!("manifest_stub{}.runfiles", EXE_EXT));
+    let binary_dir = runfiles_dir.join(WORKSPACE_NAME).join("bin");
+    fs::create_dir_all(&binary_dir).map_err(|e| format!("Failed to create binary dir: {}", e))?;
+
+    let add_binary = config.test_binaries_dir.join(format!("add-numbers{}", EXE_EXT));
+    let dest_binary = binary_dir.join(format!("add-numbers{}", EXE_EXT));
+    fs::copy(&add_binary, &dest_binary).map_err(|e| format!("Failed to copy binary: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&dest_binary)
+            .map_err(|e| format!("Failed to get permissions: {}", e))?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&dest_binary, perms)
+            .map_err(|e| format!("Failed to set permissions: {}", e))?;
+    }
+
+    // Write the manifest file (key value pairs separated by space)
+    let add_rlocation = format!("{}/bin/add-numbers{}", WORKSPACE_NAME, EXE_EXT);
+    let manifest_content = format!("{} {}\n", add_rlocation, dest_binary.display());
+    fs::write(&manifest_path, manifest_content)
+        .map_err(|e| format!("Failed to write manifest: {}", e))?;
+
+    // Create the stub
+    finalize_stub(
+        config,
+        &stub_path,
+        &[&add_rlocation, "7", "8"],
+        &[0],
+    )?;
+
+    // Run WITHOUT setting any environment variables
+    let mut cmd = Command::new(&stub_path);
+    cmd.env_remove("RUNFILES_DIR");
+    cmd.env_remove("RUNFILES_MANIFEST_FILE");
+
+    let output = cmd.output().map_err(|e| format!("Failed to run stub: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit_code = output.status.code().unwrap_or(-1);
+
+    if exit_code != 0 {
+        return Err(format!(
+            "Stub failed with exit code {}.\nstdout: {}\nstderr: {}",
+            exit_code, stdout, stderr
+        ));
+    }
+
+    if !stdout.contains("SUM:15") {
+        return Err(format!("Unexpected output: {}. Expected 'SUM:15'", stdout));
+    }
+
+    println!("    PASS");
+
+    Ok(())
+}
+
 /// Test: print-env to verify environment and argument passing
 fn test_print_env(config: &TestConfig) -> Result<(), String> {
     println!("  Running test: print_env");
@@ -806,6 +878,7 @@ fn main() -> ExitCode {
         ("orchestrator_env_propagation", test_orchestrator_env_propagation),
         ("mixed_arguments", test_mixed_arguments),
         ("fallback_runfiles_dir", test_fallback_runfiles_dir),
+        ("fallback_runfiles_manifest", test_fallback_runfiles_manifest),
         ("print_env", test_print_env),
     ];
 

@@ -61,6 +61,7 @@ mod syscall_numbers {
     pub const SYS_WRITE: usize = 1;
     pub const SYS_OPEN: usize = 2;
     pub const SYS_CLOSE: usize = 3;
+    pub const SYS_ACCESS: usize = 21;
     pub const SYS_EXECVE: usize = 59;
     pub const SYS_EXIT: usize = 60;
 }
@@ -71,9 +72,10 @@ mod syscall_numbers {
     pub const SYS_WRITE: usize = 64;
     pub const SYS_OPENAT: usize = 56;  // openat is used on aarch64
     pub const SYS_CLOSE: usize = 57;
+    pub const SYS_FACCESSAT: usize = 48;  // faccessat is used on aarch64
     pub const SYS_EXECVE: usize = 221;
     pub const SYS_EXIT: usize = 93;
-    pub const AT_FDCWD: i32 = -100;  // Special fd for openat to work like open
+    pub const AT_FDCWD: i32 = -100;  // Special fd for openat/faccessat to work like open/access
 }
 
 use syscall_numbers::*;
@@ -232,6 +234,41 @@ fn close(fd: i32) {
             lateout("x0") _,
         );
     }
+}
+
+// Check if a path exists using access() syscall with F_OK (0)
+#[cfg(target_arch = "x86_64")]
+fn path_exists(path: &[u8]) -> bool {
+    let ret: i32;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_ACCESS,
+            in("rdi") path.as_ptr(),
+            in("rsi") 0i32,  // F_OK = 0 (check existence)
+            lateout("rax") ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+        );
+    }
+    ret == 0
+}
+
+#[cfg(target_arch = "aarch64")]
+fn path_exists(path: &[u8]) -> bool {
+    let ret: i32;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") SYS_FACCESSAT,
+            in("x0") AT_FDCWD,
+            in("x1") path.as_ptr(),
+            in("x2") 0i32,  // F_OK = 0 (check existence)
+            in("x3") 0i32,  // flags = 0
+            lateout("x0") ret,
+        );
+    }
+    ret == 0
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -493,51 +530,14 @@ impl Runfiles {
             let exe_len = str_len(exe_path);
             if exe_len > 0 {
                 // Try <executable>.runfiles_manifest file first
-                if exe_len + 18 < MAX_PATH_LEN {  // +18 for ".runfiles_manifest\0"
+                if exe_len + 19 < MAX_PATH_LEN {  // +19 for ".runfiles_manifest\0"
                     let mut manifest_file_path = [0u8; MAX_PATH_LEN + 1];
 
                     // Copy executable path
                     manifest_file_path[..exe_len].copy_from_slice(&exe_path[..exe_len]);
 
-                    // Append ".runfiles_manifest"
-                    manifest_file_path[exe_len..exe_len + 17].copy_from_slice(b".runfiles_manifest");
-                    let manifest_file_len = exe_len + 17;
-
-                    // Try to load the manifest file
-                    if let Some(manifest) = load_manifest(&manifest_file_path[..manifest_file_len + 1]) {
-                        // Also determine the runfiles directory for RUNFILES_DIR envvar
-                        // The directory is <executable>.runfiles
-                        let mut dir_path = [0u8; MAX_PATH_LEN];
-                        let dir_len = if exe_len + 9 < MAX_PATH_LEN {
-                            dir_path[..exe_len].copy_from_slice(&exe_path[..exe_len]);
-                            dir_path[exe_len..exe_len + 9].copy_from_slice(b".runfiles");
-                            exe_len + 9
-                        } else {
-                            0
-                        };
-
-                        let mut manifest_path_without_null = [0u8; MAX_PATH_LEN];
-                        manifest_path_without_null[..manifest_file_len].copy_from_slice(&manifest_file_path[..manifest_file_len]);
-
-                        return Some(Self {
-                            mode: RunfilesMode::ManifestBased(manifest),
-                            manifest_path: Some((manifest_path_without_null, manifest_file_len)),
-                            dir_path: if dir_len > 0 { Some((dir_path, dir_len)) } else { None },
-                        });
-                    }
-                }
-
-                // Try <executable>.runfiles/MANIFEST file
-                // This handles cases where the runfiles dir exists with only a MANIFEST inside,
-                // but the .runfiles_manifest file next to the executable is missing
-                if exe_len + 19 < MAX_PATH_LEN {  // +19 for ".runfiles/MANIFEST\0"
-                    let mut manifest_file_path = [0u8; MAX_PATH_LEN + 1];
-
-                    // Copy executable path
-                    manifest_file_path[..exe_len].copy_from_slice(&exe_path[..exe_len]);
-
-                    // Append ".runfiles/MANIFEST"
-                    manifest_file_path[exe_len..exe_len + 18].copy_from_slice(b".runfiles/MANIFEST");
+                    // Append ".runfiles_manifest" (18 characters)
+                    manifest_file_path[exe_len..exe_len + 18].copy_from_slice(b".runfiles_manifest");
                     let manifest_file_len = exe_len + 18;
 
                     // Try to load the manifest file
@@ -575,11 +575,8 @@ impl Runfiles {
                     runfiles_dir[exe_len..exe_len + 9].copy_from_slice(b".runfiles");
                     runfiles_dir[exe_len + 9] = 0; // null terminator
 
-                    // Check if directory exists by trying to open it
-                    let fd = open(&runfiles_dir[..exe_len + 10]);
-                    if fd >= 0 {
-                        close(fd);
-                        // Remove null terminator for internal storage
+                    // Check if directory exists using access() syscall
+                    if path_exists(&runfiles_dir[..exe_len + 10]) {
                         return Some(Self {
                             mode: RunfilesMode::DirectoryBased(runfiles_dir, exe_len + 9),
                             manifest_path: None,

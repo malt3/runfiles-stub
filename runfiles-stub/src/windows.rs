@@ -431,52 +431,14 @@ impl Runfiles {
             let exe_len = strlen(exe_path);
             if exe_len > 0 {
                 // Try <executable>.runfiles_manifest file first
-                if exe_len + 18 < MAX_PATH_LEN {  // +18 for ".runfiles_manifest\0"
+                if exe_len + 19 < MAX_PATH_LEN {  // +19 for ".runfiles_manifest\0"
                     let mut manifest_file_path = [0u8; MAX_PATH_LEN];
 
                     // Copy executable path
                     manifest_file_path[..exe_len].copy_from_slice(&exe_path[..exe_len]);
 
-                    // Append ".runfiles_manifest"
-                    manifest_file_path[exe_len..exe_len + 17].copy_from_slice(b".runfiles_manifest");
-                    let manifest_file_len = exe_len + 17;
-
-                    // Try to load the manifest file
-                    if let Some(manifest) = load_manifest(&manifest_file_path[..manifest_file_len]) {
-                        // Also determine the runfiles directory for RUNFILES_DIR envvar
-                        // The directory is <executable>.runfiles
-                        let mut dir_path = [0u8; MAX_PATH_LEN];
-                        if exe_len + 9 < MAX_PATH_LEN {
-                            dir_path[..exe_len].copy_from_slice(&exe_path[..exe_len]);
-                            dir_path[exe_len..exe_len + 9].copy_from_slice(b".runfiles");
-                            let dir_len = exe_len + 9;
-
-                            return Some(Self {
-                                mode: RunfilesMode::ManifestBased(manifest),
-                                manifest_path: Some((manifest_file_path, manifest_file_len)),
-                                dir_path: Some((dir_path, dir_len)),
-                            });
-                        } else {
-                            return Some(Self {
-                                mode: RunfilesMode::ManifestBased(manifest),
-                                manifest_path: Some((manifest_file_path, manifest_file_len)),
-                                dir_path: None,
-                            });
-                        }
-                    }
-                }
-
-                // Try <executable>.runfiles\MANIFEST file
-                // This handles cases where the runfiles dir exists with only a MANIFEST inside,
-                // but the .runfiles_manifest file next to the executable is missing
-                if exe_len + 19 < MAX_PATH_LEN {  // +19 for ".runfiles\MANIFEST\0"
-                    let mut manifest_file_path = [0u8; MAX_PATH_LEN];
-
-                    // Copy executable path
-                    manifest_file_path[..exe_len].copy_from_slice(&exe_path[..exe_len]);
-
-                    // Append ".runfiles\MANIFEST"
-                    manifest_file_path[exe_len..exe_len + 18].copy_from_slice(b".runfiles\\MANIFEST");
+                    // Append ".runfiles_manifest" (18 characters)
+                    manifest_file_path[exe_len..exe_len + 18].copy_from_slice(b".runfiles_manifest");
                     let manifest_file_len = exe_len + 18;
 
                     // Try to load the manifest file
