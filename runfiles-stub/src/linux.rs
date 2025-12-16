@@ -305,11 +305,26 @@ fn execve(filename: *const u8, argv: *const *const u8, envp: *const *const u8) -
     ret
 }
 
+// String constants for error messages
+const ERR: &[u8] = b"ERROR: ";
+const NL: &[u8] = b"\n";
+
 // String utilities
+#[inline(always)]
 fn print(s: &[u8]) {
     write(STDOUT, s);
 }
 
+#[cold]
+#[inline(never)]
+fn error_exit(msg: &[u8]) -> ! {
+    print(ERR);
+    print(msg);
+    print(NL);
+    exit(1);
+}
+
+#[cold]
 fn print_number(mut n: usize) {
     let mut buf = [0u8; 20]; // Enough for 64-bit numbers
     let mut i = 0;
@@ -332,6 +347,7 @@ fn print_number(mut n: usize) {
     }
 }
 
+#[inline(always)]
 fn str_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -344,6 +360,7 @@ fn str_eq(a: &[u8], b: &[u8]) -> bool {
     true
 }
 
+#[inline(always)]
 fn str_starts_with(haystack: &[u8], needle: &[u8]) -> bool {
     if haystack.len() < needle.len() {
         return false;
@@ -351,6 +368,7 @@ fn str_starts_with(haystack: &[u8], needle: &[u8]) -> bool {
     str_eq(&haystack[..needle.len()], needle)
 }
 
+#[inline(always)]
 fn find_byte(haystack: &[u8], needle: u8) -> Option<usize> {
     for i in 0..haystack.len() {
         if haystack[i] == needle {
@@ -714,6 +732,7 @@ static mut ARG8_PLACEHOLDER: [u8; ARG_SIZE] = [b'@'; ARG_SIZE];
 static mut ARG9_PLACEHOLDER: [u8; ARG_SIZE] = [b'@'; ARG_SIZE];
 
 // Get the length of a null-terminated string (Rust-style, takes slice)
+#[inline(always)]
 fn str_len(s: &[u8]) -> usize {
     let mut len = 0;
     while len < s.len() && s[len] != 0 {
@@ -723,6 +742,7 @@ fn str_len(s: &[u8]) -> usize {
 }
 
 // Check if placeholder is still in template state
+#[inline(always)]
 fn is_template_placeholder(placeholder: &[u8]) -> bool {
     if placeholder.len() < 17 {
         return false;
@@ -764,12 +784,7 @@ fn get_environ() -> *const *const u8 {
         // Check if environment data was truncated
         let data_len = bytes_read as usize;
         if data_len >= MAX_ENV_SIZE {
-            print(b"ERROR: Environment data exceeds buffer limit of ");
-            print_number(MAX_ENV_SIZE);
-            print(b" bytes\n");
-            print(b"Environment was truncated. This indicates the total environment size is too large.\n");
-            print(b"Consider reducing the number or size of environment variables.\n");
-            exit(1);
+            error_exit(b"env");
         }
 
         // Parse environment variables (null-separated entries)
@@ -798,11 +813,7 @@ fn get_environ() -> *const *const u8 {
 
         // Check if we hit the max number of environment variables
         if env_count >= MAX_ENV_VARS && pos < data_len {
-            print(b"ERROR: Number of environment variables exceeds limit of ");
-            print_number(MAX_ENV_VARS);
-            print(b"\n");
-            print(b"Consider reducing the number of environment variables.\n");
-            exit(1);
+            error_exit(b"env");
         }
 
         // Null-terminate the pointer array
@@ -859,34 +870,16 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *const *const u8 {
         // Add runfiles environment variables first
         if let Some((path, len)) = rf.manifest_path {
             if !add_env_var(b"RUNFILES_MANIFEST_FILE", &path[..len]) {
-                print(b"ERROR: Failed to add RUNFILES_MANIFEST_FILE to environment\n");
-                print(b"Environment buffer limit exceeded. Total size limit: ");
-                print_number(MAX_ENV_SIZE);
-                print(b" bytes, max variables: ");
-                print_number(MAX_ENV_VARS);
-                print(b"\n");
-                exit(1);
+                error_exit(b"env");
             }
         }
 
         if let Some((path, len)) = rf.dir_path {
             if !add_env_var(b"RUNFILES_DIR", &path[..len]) {
-                print(b"ERROR: Failed to add RUNFILES_DIR to environment\n");
-                print(b"Environment buffer limit exceeded. Total size limit: ");
-                print_number(MAX_ENV_SIZE);
-                print(b" bytes, max variables: ");
-                print_number(MAX_ENV_VARS);
-                print(b"\n");
-                exit(1);
+                error_exit(b"env");
             }
             if !add_env_var(b"JAVA_RUNFILES", &path[..len]) {
-                print(b"ERROR: Failed to add JAVA_RUNFILES to environment\n");
-                print(b"Environment buffer limit exceeded. Total size limit: ");
-                print_number(MAX_ENV_SIZE);
-                print(b" bytes, max variables: ");
-                print_number(MAX_ENV_VARS);
-                print(b"\n");
-                exit(1);
+                error_exit(b"env");
             }
         }
 
@@ -926,19 +919,7 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *const *const u8 {
 
         // Check if any environment variables were dropped
         if env_dropped {
-            print(b"ERROR: Failed to copy all environment variables\n");
-            print(b"Environment buffer limit exceeded. Total size limit: ");
-            print_number(MAX_ENV_SIZE);
-            print(b" bytes, max variables: ");
-            print_number(MAX_ENV_VARS);
-            print(b"\n");
-            print(b"Current usage: ");
-            print_number(data_pos);
-            print(b" bytes, ");
-            print_number(new_env_count);
-            print(b" variables\n");
-            print(b"Consider reducing the number or size of environment variables.\n");
-            exit(1);
+            error_exit(b"env");
         }
 
         // Null-terminate the pointer array
@@ -973,18 +954,14 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
 
         // Check if ARGC is still a placeholder
         if is_template_placeholder(&ARGC_PLACEHOLDER) {
-            print(b"ERROR: This is a template stub runner.\n");
-            print(b"You must finalize it by replacing the placeholders before use.\n");
-            print(b"The ARGC_PLACEHOLDER has not been replaced.\n");
-            exit(1);
+            error_exit(b"template");
         }
 
         // Parse argc from placeholder
         let argc_str = &ARGC_PLACEHOLDER;
         let argc_len = str_len(argc_str);
         if argc_len == 0 {
-            print(b"ERROR: ARGC is empty\n");
-            exit(1);
+            error_exit(b"argc");
         }
 
         // Parse argc as decimal number
@@ -994,14 +971,12 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
             if c >= b'0' && c <= b'9' {
                 argc = argc * 10 + (c - b'0') as usize;
             } else {
-                print(b"ERROR: ARGC contains non-digit characters\n");
-                exit(1);
+                error_exit(b"argc");
             }
         }
 
         if argc == 0 || argc > 10 {
-            print(b"ERROR: Invalid argc (must be 1-10)\n");
-            exit(1);
+            error_exit(b"argc");
         }
 
         // Parse transform flags (bitmask of which args to transform)
@@ -1016,8 +991,7 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
                 if c >= b'0' && c <= b'9' {
                     transform_flags = transform_flags * 10 + (c - b'0') as u32;
                 } else {
-                    print(b"ERROR: TRANSFORM_FLAGS contains non-digit characters\n");
-                    exit(1);
+                    error_exit(b"flags");
                 }
             }
         }
@@ -1066,9 +1040,7 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
             if let Some(rf) = Runfiles::create(executable_path) {
                 Some(rf)
             } else {
-                print(b"ERROR: Failed to initialize runfiles\n");
-                print(b"Set RUNFILES_DIR or RUNFILES_MANIFEST_FILE, or ensure <executable>.runfiles/ directory exists\n");
-                exit(1);
+                error_exit(b"runfiles");
             }
         } else {
             None
@@ -1099,11 +1071,7 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
             let arg_len = str_len(arg_data);
 
             if arg_len == 0 {
-                print(b"ERROR: Argument ");
-                let digit = [b'0' + i as u8];
-                print(&digit);
-                print(b" is empty\n");
-                exit(1);
+                error_exit(b"arg");
             }
 
             let arg_slice = &arg_data[..arg_len];
@@ -1141,8 +1109,7 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
         if runtime_argc > 1 {
             for i in 1..runtime_argc {
                 if total_argc >= 128 {
-                    print(b"ERROR: Too many total arguments (embedded + runtime > 128)\n");
-                    exit(1);
+                    error_exit(b"args");
                 }
 
                 // Get runtime argument
@@ -1178,18 +1145,9 @@ pub extern "C" fn _start_rust(initial_sp: *const usize) -> ! {
         };
 
         // Execute the target program
-        let ret = execve(executable, resolved_ptrs.as_ptr(), envp);
+        execve(executable, resolved_ptrs.as_ptr(), envp);
 
         // If execve returns, it failed
-        print(b"ERROR: execve failed with code ");
-        let digit = if ret < 0 {
-            print(b"-");
-            (-ret) as u8 + b'0'
-        } else {
-            ret as u8 + b'0'
-        };
-        print(&[digit]);
-        print(b"\n");
-        exit(1);
+        error_exit(b"exec");
     }
 }
