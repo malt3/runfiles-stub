@@ -198,6 +198,28 @@ fn print(s: &[u8]) {
     }
 }
 
+fn print_number(mut n: usize) {
+    let mut buf = [0u8; 20]; // Enough for 64-bit numbers
+    let mut i = 0;
+
+    if n == 0 {
+        print(b"0");
+        return;
+    }
+
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+
+    // Print in reverse order
+    while i > 0 {
+        i -= 1;
+        print(&buf[i..i+1]);
+    }
+}
+
 fn str_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -580,12 +602,23 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void
         // We need to maintain sorted order when adding our variables
 
         let mut data_pos = 0usize;
+        let max_pos = MODIFIED_ENV_DATA.len();
+
+        // Helper to check bounds before writing
+        let check_bounds = |pos: usize, needed: usize| -> bool {
+            pos + needed <= max_pos
+        };
 
         // Copy existing environment and insert runfiles vars in correct sorted position
         let env_block = GetEnvironmentStringsW();
         if env_block.is_null() {
             // No parent environment, just add runfiles vars in sorted order
-            let mut add_env = |key: &[u8], value: &[u8]| {
+            let mut add_env = |key: &[u8], value: &[u8]| -> bool {
+                let total_len = key.len() + 1 + value.len() + 1; // key + '=' + value + '\0'
+                if !check_bounds(data_pos, total_len) {
+                    return false;
+                }
+
                 for &b in key {
                     MODIFIED_ENV_DATA[data_pos] = b as u16;
                     data_pos += 1;
@@ -598,15 +631,34 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void
                 }
                 MODIFIED_ENV_DATA[data_pos] = 0;
                 data_pos += 1;
+                true
             };
 
             if let Some(rf) = runfiles {
                 if let Some((ref path, len)) = rf.dir_path {
-                    add_env(b"JAVA_RUNFILES", &path[..len]);
-                    add_env(b"RUNFILES_DIR", &path[..len]);
+                    if !add_env(b"JAVA_RUNFILES", &path[..len]) {
+                        print(b"ERROR: Failed to add JAVA_RUNFILES to environment\r\n");
+                        print(b"Environment buffer limit exceeded. Total size limit: ");
+                        print_number(MAX_ENV_SIZE);
+                        print(b" bytes\r\n");
+                        ExitProcess(1);
+                    }
+                    if !add_env(b"RUNFILES_DIR", &path[..len]) {
+                        print(b"ERROR: Failed to add RUNFILES_DIR to environment\r\n");
+                        print(b"Environment buffer limit exceeded. Total size limit: ");
+                        print_number(MAX_ENV_SIZE);
+                        print(b" bytes\r\n");
+                        ExitProcess(1);
+                    }
                 }
                 if let Some((ref path, len)) = rf.manifest_path {
-                    add_env(b"RUNFILES_MANIFEST_FILE", &path[..len]);
+                    if !add_env(b"RUNFILES_MANIFEST_FILE", &path[..len]) {
+                        print(b"ERROR: Failed to add RUNFILES_MANIFEST_FILE to environment\r\n");
+                        print(b"Environment buffer limit exceeded. Total size limit: ");
+                        print_number(MAX_ENV_SIZE);
+                        print(b" bytes\r\n");
+                        ExitProcess(1);
+                    }
                 }
             }
         } else {
@@ -615,6 +667,7 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void
             let mut java_runfiles_inserted = false;
             let mut runfiles_dir_inserted = false;
             let mut runfiles_manifest_inserted = false;
+            let mut env_dropped = false;
 
             loop {
                 let entry_start = pos;
@@ -691,16 +744,21 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void
                     if !java_runfiles_inserted && var_comes_after(b"JAVA_RUNFILES") {
                         if let Some(rf) = runfiles {
                             if let Some((ref path, len)) = rf.dir_path {
-                                for &b in b"JAVA_RUNFILES=" {
-                                    MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                let total_len = 14 + len + 1; // "JAVA_RUNFILES=" + value + '\0'
+                                if !check_bounds(data_pos, total_len) {
+                                    env_dropped = true;
+                                } else {
+                                    for &b in b"JAVA_RUNFILES=" {
+                                        MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                        data_pos += 1;
+                                    }
+                                    for i in 0..len {
+                                        MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                                        data_pos += 1;
+                                    }
+                                    MODIFIED_ENV_DATA[data_pos] = 0;
                                     data_pos += 1;
                                 }
-                                for i in 0..len {
-                                    MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
-                                    data_pos += 1;
-                                }
-                                MODIFIED_ENV_DATA[data_pos] = 0;
-                                data_pos += 1;
                             }
                         }
                         java_runfiles_inserted = true;
@@ -710,16 +768,21 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void
                     if !runfiles_dir_inserted && var_comes_after(b"RUNFILES_DIR") {
                         if let Some(rf) = runfiles {
                             if let Some((ref path, len)) = rf.dir_path {
-                                for &b in b"RUNFILES_DIR=" {
-                                    MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                let total_len = 13 + len + 1; // "RUNFILES_DIR=" + value + '\0'
+                                if !check_bounds(data_pos, total_len) {
+                                    env_dropped = true;
+                                } else {
+                                    for &b in b"RUNFILES_DIR=" {
+                                        MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                        data_pos += 1;
+                                    }
+                                    for i in 0..len {
+                                        MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                                        data_pos += 1;
+                                    }
+                                    MODIFIED_ENV_DATA[data_pos] = 0;
                                     data_pos += 1;
                                 }
-                                for i in 0..len {
-                                    MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
-                                    data_pos += 1;
-                                }
-                                MODIFIED_ENV_DATA[data_pos] = 0;
-                                data_pos += 1;
                             }
                         }
                         runfiles_dir_inserted = true;
@@ -729,16 +792,21 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void
                     if !runfiles_manifest_inserted && var_comes_after(b"RUNFILES_MANIFEST_FILE") {
                         if let Some(rf) = runfiles {
                             if let Some((ref path, len)) = rf.manifest_path {
-                                for &b in b"RUNFILES_MANIFEST_FILE=" {
-                                    MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                let total_len = 23 + len + 1; // "RUNFILES_MANIFEST_FILE=" + value + '\0'
+                                if !check_bounds(data_pos, total_len) {
+                                    env_dropped = true;
+                                } else {
+                                    for &b in b"RUNFILES_MANIFEST_FILE=" {
+                                        MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                        data_pos += 1;
+                                    }
+                                    for i in 0..len {
+                                        MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                                        data_pos += 1;
+                                    }
+                                    MODIFIED_ENV_DATA[data_pos] = 0;
                                     data_pos += 1;
                                 }
-                                for i in 0..len {
-                                    MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
-                                    data_pos += 1;
-                                }
-                                MODIFIED_ENV_DATA[data_pos] = 0;
-                                data_pos += 1;
                             }
                         }
                         runfiles_manifest_inserted = true;
@@ -751,6 +819,8 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void
                         }
                         MODIFIED_ENV_DATA[data_pos + entry_len] = 0;
                         data_pos += entry_len + 1;
+                    } else {
+                        env_dropped = true;
                     }
                 }
 
@@ -761,50 +831,79 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *mut core::ffi::c_void
             if !java_runfiles_inserted {
                 if let Some(rf) = runfiles {
                     if let Some((ref path, len)) = rf.dir_path {
-                        for &b in b"JAVA_RUNFILES=" {
-                            MODIFIED_ENV_DATA[data_pos] = b as u16;
+                        let total_len = 14 + len + 1;
+                        if !check_bounds(data_pos, total_len) {
+                            env_dropped = true;
+                        } else {
+                            for &b in b"JAVA_RUNFILES=" {
+                                MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                data_pos += 1;
+                            }
+                            for i in 0..len {
+                                MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                                data_pos += 1;
+                            }
+                            MODIFIED_ENV_DATA[data_pos] = 0;
                             data_pos += 1;
                         }
-                        for i in 0..len {
-                            MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
-                            data_pos += 1;
-                        }
-                        MODIFIED_ENV_DATA[data_pos] = 0;
-                        data_pos += 1;
                     }
                 }
             }
             if !runfiles_dir_inserted {
                 if let Some(rf) = runfiles {
                     if let Some((ref path, len)) = rf.dir_path {
-                        for &b in b"RUNFILES_DIR=" {
-                            MODIFIED_ENV_DATA[data_pos] = b as u16;
+                        let total_len = 13 + len + 1;
+                        if !check_bounds(data_pos, total_len) {
+                            env_dropped = true;
+                        } else {
+                            for &b in b"RUNFILES_DIR=" {
+                                MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                data_pos += 1;
+                            }
+                            for i in 0..len {
+                                MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                                data_pos += 1;
+                            }
+                            MODIFIED_ENV_DATA[data_pos] = 0;
                             data_pos += 1;
                         }
-                        for i in 0..len {
-                            MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
-                            data_pos += 1;
-                        }
-                        MODIFIED_ENV_DATA[data_pos] = 0;
-                        data_pos += 1;
                     }
                 }
             }
             if !runfiles_manifest_inserted {
                 if let Some(rf) = runfiles {
                     if let Some((ref path, len)) = rf.manifest_path {
-                        for &b in b"RUNFILES_MANIFEST_FILE=" {
-                            MODIFIED_ENV_DATA[data_pos] = b as u16;
+                        let total_len = 23 + len + 1;
+                        if !check_bounds(data_pos, total_len) {
+                            env_dropped = true;
+                        } else {
+                            for &b in b"RUNFILES_MANIFEST_FILE=" {
+                                MODIFIED_ENV_DATA[data_pos] = b as u16;
+                                data_pos += 1;
+                            }
+                            for i in 0..len {
+                                MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
+                                data_pos += 1;
+                            }
+                            MODIFIED_ENV_DATA[data_pos] = 0;
                             data_pos += 1;
                         }
-                        for i in 0..len {
-                            MODIFIED_ENV_DATA[data_pos] = path[i] as u16;
-                            data_pos += 1;
-                        }
-                        MODIFIED_ENV_DATA[data_pos] = 0;
-                        data_pos += 1;
                     }
                 }
+            }
+
+            // Check if any environment variables were dropped
+            if env_dropped {
+                FreeEnvironmentStringsW(env_block);
+                print(b"ERROR: Failed to copy all environment variables\r\n");
+                print(b"Environment buffer limit exceeded. Total size limit: ");
+                print_number(MAX_ENV_SIZE);
+                print(b" bytes\r\n");
+                print(b"Current usage: ");
+                print_number(data_pos * 2); // *2 because it's u16 array
+                print(b" bytes\r\n");
+                print(b"Consider reducing the number or size of environment variables.\r\n");
+                ExitProcess(1);
             }
 
             FreeEnvironmentStringsW(env_block);

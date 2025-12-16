@@ -40,6 +40,28 @@ fn print(s: &[u8]) {
     }
 }
 
+fn print_number(mut n: usize) {
+    let mut buf = [0u8; 20]; // Enough for 64-bit numbers
+    let mut i = 0;
+
+    if n == 0 {
+        print(b"0");
+        return;
+    }
+
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+
+    // Print in reverse order
+    while i > 0 {
+        i -= 1;
+        print(&buf[i..i+1]);
+    }
+}
+
 fn str_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -362,8 +384,14 @@ impl Runfiles {
 }
 
 // Environment building for export mode
-const MAX_ENV_SIZE: usize = 16384;
-const MAX_ENV_VARS: usize = 256;
+// These limits are based on macOS's ARG_MAX, which defines the maximum
+// combined size of argv + envp that can be passed to execve(). Modern macOS
+// systems (macOS 26.1+) have a 1 MiB limit, older kernels have 256 KiB.
+// This limit is fixed (not dynamic like Linux).
+// See: sysctl kern.argmax or getconf ARG_MAX
+// Reference: https://gist.github.com/malt3/c1439aa16208a74194accb025ab1cc5b
+const MAX_ENV_SIZE: usize = 1048576;  // 1 MiB - matches modern macOS ARG_MAX limit
+const MAX_ENV_VARS: usize = 1024;     // Max number of environment variables
 
 static mut MODIFIED_ENV_DATA: [u8; MAX_ENV_SIZE] = [0; MAX_ENV_SIZE];
 static mut MODIFIED_ENV_PTRS: [*const u8; MAX_ENV_VARS + 1] = [core::ptr::null(); MAX_ENV_VARS + 1];
@@ -412,20 +440,45 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *const *const u8 {
         // Add RUNFILES_MANIFEST_FILE if we have it
         if let Some(rf) = runfiles {
             if let Some((ref path, len)) = rf.manifest_path {
-                add_env_var(b"RUNFILES_MANIFEST_FILE", &path[..len]);
+                if !add_env_var(b"RUNFILES_MANIFEST_FILE", &path[..len]) {
+                    print(b"ERROR: Failed to add RUNFILES_MANIFEST_FILE to environment\n");
+                    print(b"Environment buffer limit exceeded. Total size limit: ");
+                    print_number(MAX_ENV_SIZE);
+                    print(b" bytes, max variables: ");
+                    print_number(MAX_ENV_VARS);
+                    print(b"\n");
+                    exit(1);
+                }
             }
         }
 
         // Add RUNFILES_DIR if we have it
         if let Some(rf) = runfiles {
             if let Some((ref path, len)) = rf.dir_path {
-                add_env_var(b"RUNFILES_DIR", &path[..len]);
-                add_env_var(b"JAVA_RUNFILES", &path[..len]);
+                if !add_env_var(b"RUNFILES_DIR", &path[..len]) {
+                    print(b"ERROR: Failed to add RUNFILES_DIR to environment\n");
+                    print(b"Environment buffer limit exceeded. Total size limit: ");
+                    print_number(MAX_ENV_SIZE);
+                    print(b" bytes, max variables: ");
+                    print_number(MAX_ENV_VARS);
+                    print(b"\n");
+                    exit(1);
+                }
+                if !add_env_var(b"JAVA_RUNFILES", &path[..len]) {
+                    print(b"ERROR: Failed to add JAVA_RUNFILES to environment\n");
+                    print(b"Environment buffer limit exceeded. Total size limit: ");
+                    print_number(MAX_ENV_SIZE);
+                    print(b" bytes, max variables: ");
+                    print_number(MAX_ENV_VARS);
+                    print(b"\n");
+                    exit(1);
+                }
             }
         }
 
         // Copy existing environment, filtering out runfiles vars
         let mut env_ptr = environ;
+        let mut env_dropped = false;
         while !(*env_ptr).is_null() && ptr_idx < MAX_ENV_VARS {
             let entry_ptr = *env_ptr;
 
@@ -452,10 +505,29 @@ fn build_runfiles_environ(runfiles: Option<&Runfiles>) -> *const *const u8 {
                     ptr_idx += 1;
 
                     data_pos += len + 1;
+                } else {
+                    env_dropped = true;
                 }
             }
 
             env_ptr = env_ptr.add(1);
+        }
+
+        // Check if any environment variables were dropped
+        if env_dropped {
+            print(b"ERROR: Failed to copy all environment variables\n");
+            print(b"Environment buffer limit exceeded. Total size limit: ");
+            print_number(MAX_ENV_SIZE);
+            print(b" bytes, max variables: ");
+            print_number(MAX_ENV_VARS);
+            print(b"\n");
+            print(b"Current usage: ");
+            print_number(data_pos);
+            print(b" bytes, ");
+            print_number(ptr_idx);
+            print(b" variables\n");
+            print(b"Consider reducing the number or size of environment variables.\n");
+            exit(1);
         }
 
         // Null-terminate the pointer array
